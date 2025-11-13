@@ -22,7 +22,8 @@ add_peaklabel=function(
     label=NULL,
     hjust=0,
     nudge_y=0,
-    colour="black"){
+    colour="black",
+    txt_size=10){
  # print("C")
   geom_label(
     data=data.frame(peak=peak,
@@ -35,7 +36,8 @@ add_peaklabel=function(
         y=y_abs,
         label=label),
     hjust=hjust,
-    nudge_y = nudge_y)
+    nudge_y = nudge_y,
+    size=txt_size)
 }
 ###################################### band
 add_peakband=function(low=NULL,
@@ -67,7 +69,8 @@ add_peaklayer=function(
     label=NULL,
     hjust=0,
     nudge_y=0,
-    colour="black"){
+    colour="black",
+    txt_size=10){
  # print(1.1)
   list(add_peakline(peak = peak,
                     y_abs = y_abs,
@@ -78,7 +81,8 @@ add_peaklayer=function(
                 label=label,
                 hjust = hjust,
                 nudge_y = nudge_y,
-                colour = colour)
+                colour = colour,
+                txt_size=txt_size)
   )
 
 }
@@ -92,7 +96,8 @@ add_bandlayer=function(
     label=NULL,
     hjust=0,
     nudge_y=0,
-    colour="black"){
+    colour="black",
+    txt_size=10){
 #print(2.1)
   list(add_peakband(low = low,
                     high = high,
@@ -104,7 +109,8 @@ add_bandlayer=function(
                 label=label,
                 hjust = hjust,
                 nudge_y = nudge_y,
-                colour = colour)
+                colour = colour,
+                txt_size=txt_size)
   )
 
 }
@@ -119,7 +125,8 @@ add_peakbandlayer=function(
     label=NULL,
     hjust=0,
     nudge_y=0,
-    colour="black"){
+    colour="black",
+    txt_size=10){
   #print(3.1)
   list(add_peakband(low = low,
                     high = high,
@@ -136,7 +143,8 @@ add_peakbandlayer=function(
                 label=label,
                 hjust = hjust,
                 nudge_y = nudge_y,
-                colour = colour)
+                colour = colour,
+                txt_size=txt_size)
   )
 
 }
@@ -153,7 +161,8 @@ add_absorbance_marker=function(
     label=NULL,
     hjust=0,
     nudge_y=0,
-    colour="black"){
+    colour="black",
+    txt_size=10){
   if(type%in%c("p","P","Peak","peak","PEAK")){
   #  print(1)
     add_peaklayer(
@@ -162,7 +171,8 @@ add_absorbance_marker=function(
       label=label,
       hjust=hjust,
       nudge_y = nudge_y,
-      colour=colour
+      colour=colour,
+      txt_size=txt_size
     )
   }else if(type%in%c("b","B","Band","band","BAND")){
    # print(2)
@@ -173,7 +183,8 @@ add_absorbance_marker=function(
       label=label,
       hjust=hjust,
       nudge_y=nudge_y,
-      colour=colour
+      colour=colour,
+      txt_size=txt_size
     )
   }else if(type%in%c("pb","PB","pB","Pb","Peakband","peakband","PeakBand","peakBand","PEAKBAND")){
   #  print(3)
@@ -185,7 +196,8 @@ add_absorbance_marker=function(
       label=label,
       hjust=hjust,
       nudge_y=nudge_y,
-      colour=colour
+      colour=colour,
+      txt_size=txt_size
     )
   }else{
       print("ERROR no vaild type")
@@ -194,7 +206,7 @@ add_absorbance_marker=function(
 
 
 
-add_absorbance_wrapper=function(plt,dataset){
+add_absorbance_wrapper=function(plt,dataset,txt_size=10){
   for (i in c(1:nrow(dataset))){
     plt=plt+add_absorbance_marker(
       type=dataset$type[i],
@@ -205,7 +217,8 @@ add_absorbance_wrapper=function(plt,dataset){
       label=dataset$label[i],
       hjust=dataset$hjust[i],
       nudge_y=dataset$nudge_y[i],
-      colour=dataset$colour[i]
+      colour=dataset$colour[i],
+      txt_size=txt_size
     )
   }
   return(plt)
