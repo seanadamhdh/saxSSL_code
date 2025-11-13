@@ -1,0 +1,129 @@
+---
+title: "BDF_main"
+output: html_notebook
+---
+#setup
+```{r message=FALSE, warning=FALSE, r,echo=FALSE}
+# set root directory path
+# So script can easily be used on different devices. But does not change working directory for project
+#### change to your path !!!
+root_dir="C:/Users/adam/Documents"
+####
+
+
+source(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/packages.R"))
+source(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/DRIFTS_readR.R")
+source(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/soliTOC_readR.R")
+       
+```
+
+# Creating spectral dataset
+This only has to be run if the final dataset is not yet exisiting
+
+```{r}
+
+if(F){ # this takes a while to run, much faster to reload final object
+  if(F){ # only run when prepared dataset is not available and needs to be created from scratch
+  BDF_main_spc=OPUSraw_to_Preprocessed(
+    folder=paste0(root_dir,"/GitHub/BDF/BDF-SSL/1_data/1_raw_scans/1_scans_main/"), # opus files save location
+    save_raw = T,
+    save=T,
+    save_location = paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/"),
+    return=T,
+    id_string_location=c(5,8),
+    from=400,
+    to=7500,
+    reload=F,
+    make_upper=T
+  )
+  }
+# if already present. !!! Check that data is the correct set. All saved spectra sets are named "spc_data"  
+BDF_main_spc=read_rds(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/spc_data"))
+#check git.ignore for raw_spc and spc_data
+
+
+
+```
+
+# Loading soliTOC reference data
+```{r}
+BDF_main_soliTOC=pull_set_soliTOC(soliTOC_file=list.files(paste0(root_dir,"/GitHub/BDF/BDF-SSL/1_data/2_soliTOC/"),
+                                                             pattern = "main",
+                                                             full.names = T), 
+                fix_cols=T,
+                ID_col_set="Name",
+                set_id=c("LA"),
+                set_memo=c("MM400"),
+                Memo_col_set = "Memo",
+                ID_col_std="Name",
+                std_id="caco3",
+                std_value_col="TC  [%]",
+                actual=12,
+                keep_batch=F,
+                omit_check_cols=F)
+
+BDF_main_soliTOC=soliTOC_remove_duplicates(
+  BDF_main_soliTOC,
+  measurement_method="DIN19539", #change to DDIN19539GS to get measurements of alternative variant
+  reference=F,
+  method="latest",
+  # defaulting german col names
+  measurement_method.col_name="Methode",
+  date.col_name="Datum",
+  time.col_name="Zeit",
+  name.col_name="Name",
+  reference.col_name="CORG",
+  measured.col_name="TOC"
+  )
+
+saveRDS(BDF_main_soliTOC,paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/BDF_main_soliTOC"))
+
+BDF_main_soliTOC=read_rds(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/BDF_main_soliTOC"))
+
+```
+
+
+#  combine and save dataset
+```{r}
+#aggregate and save
+{
+ BDF_main=BDF_main_spc
+  
+  
+  soliTOC_merge=tibble(sample_id=BDF_main_soliTOC$Name,soliTOC=BDF_main_soliTOC)
+  BDF_main=left_join(BDF_main,soliTOC_merge,by="sample_id")
+  rm(soliTOC_merge)
+  
+    
+  BDF_database=read_csv("~/GitHub/BDF/BDF-SSL/5_Provided_BDF-Database/Adam-2023_BDF_final_selection.csv")
+
+  BDF_database_merge=tibble(sample_id=BDF_database$sample_id,BDF_database=BDF_database)
+  BDF_main=left_join(BDF_main,BDF_database_merge,by="sample_id")
+  rm(soliTOC_merge)
+
+
+  # splitting dataset to be able to upload to GitHub (otherwise 100MB limit is busted) 
+  saveRDS(BDF_main[c(1:200),],paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/BDF_main_sub-1"))
+  saveRDS(BDF_main[c(201:nrow(BDF_main)),],paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/BDF_main_sub-2"))
+}
+#!!!!
+# saved in /3_r_scripts/temp
+# loads from /4_datasets
+#reload
+{
+  tmp1=read_rds(paste0(root_dir,"/GitHub/BDF/BDF-SSL/4_datasets/Adam-2024_BDF_frisch_sub-1"))
+  tmp2=read_rds(paste0(root_dir,"/GitHub/BDF/BDF-SSL/4_datasets/Adam-2024_BDF_frisch_sub-2"))
+  tmp3=read_rds(paste0(root_dir,"/GitHub/BDF/BDF-SSL/4_datasets/Adam-2024_BDF_frisch_sub-3"))
+  
+  
+  BDF_frisch=rbind(
+    tmp1,
+    tmp2,
+    tmp3
+  )
+  rm(tmp1)
+  rm(tmp2)
+  rm(tmp3)
+}
+
+```

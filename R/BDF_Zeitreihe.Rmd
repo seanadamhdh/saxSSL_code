@@ -1,0 +1,5196 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+#setup
+```{r,echo=F}
+# set root directory path
+# So script can easily be used on different devices. But does not change working directroy for project
+
+if(stringr::str_detect(osVersion,"Windows")){
+  #workpc
+data_dir="//zfs1.hrz.tu-freiberg.de/fak3ibf/Hydropedo/Sean_Environment/"
+code_dir="C:/Users/adam/Documents/"
+}else{
+#ubuntu                       
+data_dir="/run/user/1000/gvfs/smb-share:server=zfs1.hrz.tu-freiberg.de,share=fak3ibf/Hydropedo/Sean_Environment"
+code_dir="/home/hydropedo/Documents/"
+}
+
+
+source(paste0(code_dir,"GitLab/phd_code/R_main/packages.R"))
+#print(root_dir)
+# load functions from soliTOCreadR package manually (package not yet fully functional)
+source(paste0(code_dir,"/GitHub/soliTOCreadR/R/functions.R"))
+source(paste0(code_dir,"/GitLab/phd_code/BDF/evaluate_model_adjusted.R"))
+source(paste0(code_dir,"GitLab/phd_code/BDF/DRIFTS_readR.R"))
+source(paste0(code_dir,"GitLab/phd_code/R_main/model selection and application functions.R"))
+
+BDF_list=c("BDF02","BDF12","BDF13",
+           "BDF22","BDF23","BDF24",
+           "BDF30","BDF35","BDF33",
+           "BDF42","BDF43","BDF46")
+
+gg_color_hue <- function(n) {
+    hues = seq(15, 375, length = n + 1)
+    hcl(h = hues, l = 65, c = 100)[1:n]
+}
+
+```
+
+
+# #############################################################################
+#### #### LOADING AND MERGING ####
+# Creating spectral dataset
+This only has to be run if the final dataset is not yet exisiting
+
+```{r}
+#chekc before running spc loading function
+  spc_files=list.files(paste0(data_dir,"/R_main/data/DRIFTS/BDF scans/BDF Zeitreihe"))
+  spc_files%>%as_tibble()%>%
+    mutate(individual_id=spc_files%>%substr(5,10),sample_id=substr(individual_id,1,4))%>%
+    group_by(sample_id)%>%pull(sample_id)%>%unique%>%length
+
+  if(F){ # only run when prepared dataset is not available and needs to be created from scratch
+  BDF_Zeitreihe_spc=OPUSraw_to_Preprocessed(
+    folder=paste0(data_dir,"/R_main/data/DRIFTS/BDF scans/BDF Zeitreihe"), # opus files save location
+    save_raw = T,
+    save=T,
+    save_location = paste0(data_dir,"/R_main/data/datasets/BDF Zeitreihe"),
+    return=T,
+    id_string_location=c(5,8),
+    from=400,
+    to=7500,
+    reload=F,
+    make_upper=T,
+    date_splits = c("2024-10-07")
+  )
+  # save separately
+saveRDS(BDF_Zeitreihe_spc,paste0(data_dir,"/R_main/data/datasets/BDF Zeitreihe/spc_data"))
+  }
+
+
+BDF_Zeitreihe_spc=read_rds(paste0(data_dir,"/R_main/data/datasets/BDF Zeitreihe/spc_data"))
+
+```
+
+# Loading soliTOC reference data
+```{r}
+{
+BDF_Zeitreihe_soliTOC=pull_set_soliTOC(soliTOC_file =list.files(paste0(data_dir,"/R_main/data/soliTOC/"),pattern = "BDF_run2",full.names = T), # make sure only current version is in this path 
+                fix_cols=T,
+                ID_col_set="Name",
+                set_id=c("LC"),
+                set_memo=c("GT300"),
+                Memo_col_set = "Memo",
+                ID_col_std="Name",
+                std_id="caco3",
+                std_value_col="TC  [%]",
+                actual=12,
+                keep_batch=F,
+                omit_check_cols=F)
+# fixing typing error
+BDF_Zeitreihe_soliTOC=mutate(BDF_Zeitreihe_soliTOC,Name=if_else(Name=="LCFJC","LCJC",Name))
+}
+BDF_Zeitreihe_soliTOC_duplicated=BDF_Zeitreihe_soliTOC
+
+BDF_Zeitreihe_soliTOC=soliTOC_remove_duplicates(
+  BDF_Zeitreihe_soliTOC,
+  measurement_method="DIN19539",
+  reference=F,
+  method="latest",
+  # defaulting german col names
+  measurement_method.col_name="Methode",
+  date.col_name="Datum",
+  time.col_name="Zeit",
+  name.col_name="Name",
+  reference.col_name="CORG",
+  measured.col_name="TOC"
+  )
+
+
+
+
+saveRDS(BDF_Zeitreihe_soliTOC,paste0(data_dir,"/R_main/data/datasets/BDF Zeitreihe/BDF_Zeitreihe_soliTOC"))
+
+BDF_Zeitreihe_soliTOC=read_rds(paste0(data_dir,"/R_main/data/datasets/BDF Zeitreihe/BDF_Zeitreihe_soliTOC"))
+
+```
+
+
+# load BDF reference data (BDF_complete)
+```{r}
+# load dataset
+BDF_complete <- read_csv(paste0(data_dir,"Auswahl Zeitreihe/BDF_complete.csv"))
+
+#load LabID / BDF-IDs lookup
+lookup <- read_excel(paste0(data_dir,"Auswahl Zeitreihe/merged_Zeitreihe_sample_list.xlsx"))
+
+
+#' for some originally selected samples (ProbenNr_auswahl) no material was available.
+#' Replacements were choosen by H.F. (ProbenNr_sample). For some ProbenNr_sample, no reference data is available in our
+#' dataset (BDF_complete). Here we use the data from the originally selected samples. (They should be aliqoutes anyway). 
+
+lookup=mutate(lookup,
+              MERGE_ProbenNr=if_else(is.na(ProbenNr_sample)|ProbenNr_sample%in%BDF_complete$ProbenNr,
+                                            ProbenNr,
+                                            ProbenNr_auswahl),
+              reference_data_flag=if_else(is.na(ProbenNr_sample)|ProbenNr_sample%in%BDF_complete$ProbenNr,
+                                            "direct",
+                                            "replacement")
+)
+
+
+# schicht / aufschluss potentially cause issues (can't merge by, because they refer to auswahl rahter than actual samples - see above)
+
+
+# non BfUL
+BDF_Zeitreihe_db=left_join(lookup%>%filter(!str_detect(group,"BfUL"))%>%select(-SchichtID,-AufschlussID,-ProbenID), 
+          BDF_complete,by=c("MERGE_ProbenNr"="ProbenNr"))
+
+# add BfUL
+BfUL_data= read.csv(paste0(data_dir,"R_main/data/BDF_FISBoden/BfUL_readable.csv"))
+
+BfUL_Zeitreihe_db=left_join(lookup%>%filter(str_detect(group,"BfUL"))%>%select(-SchichtID,-AufschlussID,-ProbenID), 
+          BfUL_data,by=c("MERGE_ProbenNr"="ProbenNr"))
+
+BDF_Zeitreihe_database=bind_rows(BDF_Zeitreihe_db,BfUL_Zeitreihe_db)
+
+
+
+# old version of merging
+#BDF_Zeitreihe_ID <- read_excel("~/GitHub/BDF_Auswahl_Zeitreihe/Final/BDF_Zeitreihe_ID.xlsx")
+#BDF_Zeitreihe_Nachtrag_ID <- read_excel("~/GitHub/BDF_Auswahl_Zeitreihe/Final/BDF_Zeitreihe_Nachtrag_ID.xlsx")
+
+#BDF_Zeitreihe_database=left_join(
+#  rbind(
+#    BDF_Zeitreihe_ID%>%select(Lab_ID,PROBENNR,PROBEN_ID),
+#    BDF_Zeitreihe_Nachtrag_ID%>%select(Lab_ID,PROBENNR,PROBEN_ID)
+#  ),
+#  BDF_complete,
+#  by=c(
+#    "PROBENNR"="ProbenNr",
+#    "PROBEN_ID"="ProbenID"
+#  )
+#)
+
+# merge selection into BDF_zeitreihe using LabID (not used further here, but was used for EDA)
+  BDF_Zeitreihe_soliTOC_merge=left_join(BDF_Zeitreihe_soliTOC,BDF_Zeitreihe_database,by=c("Name"="Lab_ID"))
+
+
+# finally, merge with spc
+#init lookup -> max no of
+BDF_Zeitreihe=tibble(sample_id=lookup$Lab_ID,lookup=lookup)
+
+BDF_Zeitreihe=left_join(BDF_Zeitreihe,BDF_Zeitreihe_spc)
+
+# prep soliTOC
+soliTOCmerge=tibble(
+  sample_id=BDF_Zeitreihe_soliTOC$Name,   soliTOC=BDF_Zeitreihe_soliTOC%>%
+  transmute(
+    Memo=Memo,        
+    Gewicht=`Gewicht  [mg]`,
+    Methode=Methode,
+    Datum=Datum,
+    Zeit=hms::as_hms(Zeit),
+    TOC400_area=`TOC400  Fläche`,
+    ROC_area=`ROC  Fläche`,
+    TIC900_area=`TIC900  Fläche`,
+    TOC400_roh=`TOC400  [%]`,
+    ROC_roh=`ROC  [%]`,
+    TIC900_roh=`TIC900  Fläche`,
+    TOC_roh=`TOC  [%]`,
+    TC_roh=`TC  [%]`,
+    factor=factor,
+    TOC400=TOC400,
+    ROC=ROC,
+    TIC900=TIC900,
+    TOC=TOC,
+    TC=TC
+    )
+)
+
+# merge soliTOC
+BDF_Zeitreihe=left_join(BDF_Zeitreihe,soliTOCmerge)
+rm(soliTOCmerge)
+
+
+# prep BDF reference data
+database_merge=tibble(sample_id=BDF_Zeitreihe_database$Lab_ID,BDF_database=BDF_Zeitreihe_database)
+
+#merge BDF database
+BDF_Zeitreihe=left_join(BDF_Zeitreihe,database_merge)
+rm(database_merge)
+
+# save using qs (serialized) - uses less storage than saverds
+qs::qsave(BDF_Zeitreihe,paste0(data_dir,"R_main/data/datasets/BDF Zeitreihe/BDF_Zeitreihe"))
+
+
+```
+
+#load and merge BDF_main samples into zeitreihe
+```{r}
+# load main
+{
+  tmp1 = read_rds(paste0(data_dir,"/BDF/BDF-SSL/4_datasets/Adam-2023_BDF_main_sub-1"))
+  tmp2 = read_rds(paste0(data_dir,"/BDF/BDF-SSL/4_datasets/Adam-2023_BDF_main_sub-2"))
+  
+  BDF_main=rbind(
+    tmp1,
+    tmp2
+    )
+  rm(tmp1)
+  rm(tmp2)
+}
+
+
+## manual reload 
+#if(F){ #excluded 
+# add BDF_main
+##load main full soliTOC
+BDF_main_soliTOC=pull_set_soliTOC(soliTOC_file =list.files(paste0(data_dir,"/R_main/data/soliTOC/"),pattern = "BDF_run1",full.names = T), # make sure only current version is in this path 
+                fix_cols=F,
+                ID_col_set="Name",
+                set_id=c("LA"),
+                set_memo=c("MM400"),
+                Memo_col_set = "Memo",
+                ID_col_std="Name",
+                std_id="caco3",
+                std_value_col="TC  [%]",
+                actual=12,
+                keep_batch=F,
+                omit_check_cols=F)
+
+BDF_main_soliTOC=filter(BDF_main_soliTOC,Methode=="DIN19539")
+BDF_main_soliTOC_duplicated=BDF_main_soliTOC #save raw
+
+
+BDF_main_soliTOC=soliTOC_remove_duplicates(
+  BDF_main_soliTOC,
+  measurement_method="DIN19539",
+  reference=F,
+  method="latest",
+  # defaulting german col names
+  measurement_method.col_name="Methode",
+  date.col_name="Datum",
+  time.col_name="Zeit",
+  name.col_name="Name",
+  reference.col_name="CORG",
+  measured.col_name="TOC"
+  )
+
+## prep main
+BDF_main_soliTOC_merge=BDF_main_soliTOC%>%left_join(
+cbind(Lab_ID=BDF_main$sample_id,BDF_main$BDF_database%>%select(ProbenID,ProbenNr)),
+by=c("Name"="Lab_ID")
+)%>%left_join(BDF_complete,by=c(
+  "ProbenNr",
+  "ProbenID"
+))%>%mutate(group="main")
+
+
+#' NOTE: If time, merge BDFmain with BDFcomplete using a lookup like for Zeitreihe. Likely some samples were also replaced with available aliqoutes that do not have entries in the BDFcomplete dataset. Causes 3 reference data NAs.
+
+
+## merging main and zeitreihe data
+
+
+
+BDF_Zeitreihe_soliTOC_all=bind_rows(BDF_Zeitreihe_soliTOC_merge,BDF_main_soliTOC_merge)
+
+
+## adding BDF site data for BfUL samples
+
+BDF_Zeitreihe_soliTOC_all=mutate(BDF_Zeitreihe_soliTOC_all,
+                                 Projekt=ifelse(
+                                   is.na(Projekt)&group=="BfULZeitreihe",
+                                   paste0("BDF",substr(ProbenNr,2,3)),
+                                   Projekt
+))%>%mutate(Projekt=if_else(Projekt=="BDF59",   #BDF59 is same as BDF24
+                            "BDF24",
+                            Projekt)
+)
+
+
+
+
+
+saveRDS(BDF_Zeitreihe_soliTOC_all,paste0(data_dir,"/R_main/data/datasets/BDF Zeitreihe/BDFmain_BDFZeitreihe_soliTOC_BDFdatabase"))
+
+
+BDF_Zeitreihe_soliTOC_all=readRDS(paste0(data_dir,"/R_main/data/datasets/BDF Zeitreihe/BDFmain_BDFZeitreihe_soliTOC_BDFdatabase"))
+
+```
+#availability and depth flagging    
+```{r}
+all_prep=BDF_Zeitreihe_soliTOC_all%>%
+  filter(Projekt%in%paste0("BDF",c("02",12,13,22,23,24,30,33,35,42,43,46)))%>% # rm non-Zeitreihe BDF from appended main set
+          mutate(`obere Probentiefe`=if_else(VZ_POT=="+",-1*`obere Probentiefe`,`obere Probentiefe`),
+              `untere Probentiefe`=if_else(VZ_PUT=="+",-1*`untere Probentiefe`,`untere Probentiefe`))%>%
+                rename(oTief=`obere Probentiefe`,
+                       uTief=`untere Probentiefe`)%>%
+       mutate(mTief=(oTief+uTief)/2,HORIZONT=if_else(is.na(GEOL_SCHICHT),Horizont,paste0(GEOL_SCHICHT,Horizont)))%>%
+       select(-GEOL_SCHICHT)%>%
+  mutate(ROCratio=ROC/TOC)
+
+
+
+# add Nutzung based on Projekt for BfUL
+Nutzung_lookup=(BDF_complete%>%group_by(Projekt))%>%arrange(desc(PDATUM),.by_group = T)%>%summarise(lastDate=first(PDATUM),Nutzung=first(Nutzung))
+
+Nutzung_helper=function(BDF){
+  return((filter(Nutzung_lookup,Projekt==BDF)%>%pull(Nutzung)))
+}
+
+all_prep=all_prep%>%mutate(Nutzung=if_else(group=="BfULZeitreihe",sapply(Projekt,Nutzung_helper),Nutzung),
+                           PDATUM=as.POSIXct(PDATUM))
+
+
+saveRDS(all_prep,paste0(data_dir,"/R_main/data/datasets/BDF Zeitreihe/BDF_zeitreihe_all_prep"))
+
+write_excel_csv(all_prep,paste0(data_dir,"/R_main/data/datasets/BDF Zeitreihe/BDF_zeitreihe_all_prep.csv"))
+
+
+
+```
+
+# Filtering for consistent sampling depth and data avial.
+```{r}
+
+max_dh=.05
+min_n=5
+
+
+# changes in sampling depth
+all_prep%>%ggplot(aes(x=HORIZONT))+geom_boxplot(aes(,y=oTief),col="red",outliers = F)+geom_point(aes(,y=oTief),col="red",position=position_jitter(width=.1))+geom_boxplot(aes(,y=uTief),col="blue",outliers = F)+geom_point(aes(,y=uTief),col="blue",position=position_jitter(width=.1))+facet_wrap(vars(Projekt),scales="free")+theme_pubr()
+
+
+
+all_prep%>%left_join(all_prep%>%group_by(HORIZONT,Projekt)%>%summarise(O_min=min(oTief),
+                                                        O_avg=median(oTief),# catches most common better than mean
+                                                        O_max=max(oTief),
+                                                        U_min=min(uTief),
+                                                        U_avg=median(uTief), # catches most common better than mean
+                                                        U_max=max(uTief)),
+               by=c("HORIZONT","Projekt")
+)%>%mutate(sampling_flag=if_else(abs(oTief-O_avg)>max_dh|abs(uTief-U_avg)>max_dh,"flag","ok"))->all_prep_flag
+
+
+# sampling depth after removed flagged
+all_prep_flag%>%filter(sampling_flag=="ok")%>%ggplot(aes(x=HORIZONT))+geom_boxplot(aes(,y=oTief),col="red",outliers = F)+geom_point(aes(,y=oTief),col="red",position=position_jitter(width=.1))+geom_boxplot(aes(,y=uTief),col="blue",outliers = F)+geom_point(aes(,y=uTief),col="blue",position=position_jitter(width=.1))+facet_wrap(vars(Projekt),scales="free")+theme_pubr()
+
+# data availability for timeseries check (after filtering sampling depth)
+
+all_prep_flag=left_join(all_prep_flag,all_prep_flag%>%
+                          filter(sampling_flag=="ok")%>%
+                          group_by(HORIZONT,Projekt)%>%
+                          summarise(n_total=length(unique(PDATUM))),
+               by=c("HORIZONT","Projekt"))%>%
+  mutate(n_total=if_else(is.na(n_total),0,n_total))%>%
+  mutate(avail_flag=if_else(n_total>=min_n,"ok","flag"))
+
+filter(all_prep_flag,avail_flag=="ok"&sampling_flag=="ok")%>%ggplot(aes(x=HORIZONT))+geom_boxplot(aes(,y=oTief),col="red",outliers = F)+geom_point(aes(,y=oTief),col="red",position=position_jitter(width=.1))+geom_boxplot(aes(,y=uTief),col="blue",outliers = F)+geom_point(aes(,y=uTief),col="blue",position=position_jitter(width=.1))+facet_wrap(vars(Projekt),scales="free")+theme_pubr()
+
+
+# data availability summary:
+summary_avail=all_prep_flag%>%group_by(Projekt,HORIZONT)%>%
+  summarise(total=length(Name),
+            equal.ish_depth=length(which(sampling_flag=="ok")),
+            unique_dates=mean(n_total),
+            total_samples_remain=length(which(sampling_flag=="ok"&avail_flag=="ok"))
+            )
+
+
+
+
+
+summarise(summary_avail%>%ungroup,across(c(total,equal.ish_depth,total_samples_remain),.fns = sum))
+
+
+write_excel_csv(all_prep_flag,paste0(data_dir,"/R_main/data/datasets/BDF Zeitreihe/all_prep_flag.csv"))
+
+
+# filtered
+
+all_prep_filtered=all_prep_flag%>%filter(sampling_flag=="ok",avail_flag=="ok")
+all_prep_filtered$m=month(all_prep_filtered$PDATUM,label=T)
+
+
+BDF_complete_prep=BDF_complete%>%  mutate(`obere Probentiefe`=if_else(VZ_POT=="+",-1*`obere Probentiefe`,`obere Probentiefe`),
+                        `untere Probentiefe`=if_else(VZ_PUT=="+",-1*`untere Probentiefe`,`untere Probentiefe`))%>%
+    rename(oTief=`obere Probentiefe`,
+           uTief=`untere Probentiefe`)%>%
+    mutate(mTief=(oTief+uTief)/2,HORIZONT=if_else(is.na(GEOL_SCHICHT),Horizont,paste0(GEOL_SCHICHT,Horizont)))
+
+``` 
+
+
+#### Details to chunk above
+Während der Analyse der Daten zeigte sich, dass sich die Probenahmetiefen zwischen den einzelnen Probenahmekampagnen zum Teil erheblich unterscheiden. Um eine sinnhafte Trendanalyse durchführen zu können wurden die Proben nachträglich nach den folgenden Kriterien gefiltert:
+ * Oberkante und Unterkante des beprobten Horizonts (BDF,HORIZONT) liegt bei +- 5 cm des Medians. (HORIZONT = Geol_Schicht+Horizont)
+ * Es sind mindestes zu 5 verschiedenen Terminen Proben genommen worden 
+
+
+#### #### END OF LOADING AND MERGING ####
+# #############################################################################
+#### #### EDA soliTOC ####
+# density CORG groupd
+```{r}
+ggplot()+
+  geom_density(data=BDF_main%>%filter(BDF_database$Nutzung=="A"),
+               aes(x=BDF_database$CORG,fill="Main_Acker",col="Main_Acker"),
+               alpha=.1)+
+  geom_density(data=BDF_main%>%filter(BDF_database$Nutzung=="G"),
+               aes(x=BDF_database$CORG,fill="Main_Grünland",col="Main_Grünland"),
+               alpha=.1)+
+  geom_density(data=BDF_Zeitreihe%>%
+                 filter(sample_id%>%str_starts("LC")&BDF_database$Nutzung=="A"),
+               aes(x=BDF_database$CORG,fill="Nachtrag_Acker",col="Nachtrag_Acker"),
+               alpha=.1)+
+  geom_density(data=BDF_Zeitreihe%>%
+                 filter(sample_id%>%str_starts("LC")&BDF_database$Nutzung=="G"),
+               aes(x=BDF_database$CORG,fill="Nachtrag_Grünland",col="Nachtrag_Grünland"),
+               alpha=.1)+
+  theme_pubr()
+
+```
+
+
+
+# interactive corg - TOC
+
+```{r}
+
+ggplotly(ggplot(all_prep,
+       aes(x=CORG,y=TOC,col=if_else(str_starts(Name,"LA"),"main","zeitr.")))+
+  geom_point(alpha=.25,aes(text=Name))+
+  geom_abline(intercept = 0,slope=1)+
+  scale_color_discrete(""))
+  
+  #geom_point(data=filter(BDF_Zeitreihe_soliTOC_all,!TOC==0)%>%
+  #filter(abs(TOC-(.07149+.88302*CORG))>1),
+  #col="red",shape=4)+
+
+  #geom_point(
+   # data=BDF_Zeitreihe_soliTOC_duplicated,
+    #shape=20)
+
+```
+
+
+#TOC CORG comparison all sites
+```{r}
+
+
+
+#simple stats
+# Spearman cor
+cor.test(BDF_Zeitreihe_soliTOC_all%>%filter(Name%>%str_starts("LC"))%>%pull(TOC),BDF_Zeitreihe_soliTOC_all%>%filter(Name%>%str_starts("LC"))%>%pull(CORG),use="pairwise.complete.obs",method="spearman")
+
+
+
+###########################################################################
+# lin reg force 0 - better R", neglegably larger SSE
+###########################################################################
+{
+linreg=lm(data=BDF_Zeitreihe_soliTOC_all%>%filter(Name%>%str_starts("LC")),formula=TOC~CORG+0)
+linreg_summary=summary(linreg)
+
+conf_int=conf_95(all_prep%>%select(CORG,TOC)%>%na.omit%>%pull(TOC),all_prep%>%select(CORG,TOC)%>%na.omit%>%pull(CORG))
+
+
+p=ggplot(all_prep%>%filter(Name%>%str_starts("LC")), # exclude main
+         aes(x=CORG,y=TOC))+
+  geom_abline(intercept = 0,slope=1,linetype="dotted",linewidth=.75)+
+  
+  
+# conf int of around linreg slope
+  # geom_ribbon(aes(
+  #   ymin=linreg$coefficients*CORG-conf_int,
+  #   y=linreg$coefficients*CORG,
+  #   ymax=linreg$coefficients*CORG+conf_int
+  #   ),alpha=.1,fill="red")+
+  
+  # model confidence interval
+  #geom_abline(intercept = 0,slope=confint(linreg)[[1]],linetype="dotted",linewidth=.75)+
+  #geom_abline(intercept = 0,slope=confint(linreg)[[2]],linetype="dotted",linewidth=.75)+
+  
+  
+  geom_hex(binwidth=.1)+
+  geom_abline(slope=linreg$coefficients,intercept=0,col="red")+
+  #scale_color_manual(breaks=c("1:1","Lin.Regression"),values="black","red")+
+  scale_linetype_manual(breaks=c("1:1","Lin.Regression"),values="dotted","solid")+
+  scale_fill_viridis_c(breaks=c(1,2,5,10,20),
+                       trans = scales::pseudo_log_trans(sigma = 0.001))+
+  annotate(geom="label",x=0,y=5.5,label=paste0("TOC=",format(linreg$coefficients,digits=3),"*CORG\nr2=",
+                                             format(linreg_summary$r.squared,digits=3)),hjust=0)+
+  theme_pubr()+
+  xlab("CORG [M-%]")+
+  ylab("TOC [M-%]")+
+  theme(legend.position = "inside",legend.position.inside = c(.9,.2))
+}
+###########################################################################
+###########################################################################
+
+
+###########################################################################
+# lin reg slope and intercept
+###########################################################################
+{
+linreg=lm(data=BDF_Zeitreihe_soliTOC_all%>%filter(Name%>%str_starts("LC")),formula=TOC~CORG)
+linreg_summary=summary(linreg)
+
+conf_int=conf_95(all_prep%>%select(CORG,TOC)%>%na.omit%>%pull(TOC),all_prep%>%select(CORG,TOC)%>%na.omit%>%pull(CORG))
+
+
+p=ggplot(all_prep%>%filter(Name%>%str_starts("LC")), # exclude main
+         aes(x=CORG,y=TOC))+
+  #geom_smooth(method="glm")+
+  geom_abline(intercept = 0,slope=1,linetype="dotted",linewidth=.75)+
+  
+  
+# conf int of around linreg slope
+  
+  geom_abline(slope=linreg$coefficients[[2]],intercept=linreg$coefficients[[1]],col="red")+
+  
+  geom_ribbon(aes(
+    ymin=linreg$coefficients[[1]]+linreg$coefficients[[2]]*CORG-conf_int,
+    y=linreg$coefficients[[1]]+linreg$coefficients[[2]]*CORG,
+    ymax=linreg$coefficients[[1]]+linreg$coefficients[[2]]*CORG+conf_int
+    ),alpha=.1,fill="red")+
+  
+  # model confidence interval
+  #geom_abline(intercept = 0,slope=confint(linreg)[[1]],linetype="dotted",linewidth=.75)+
+  #geom_abline(intercept = 0,slope=confint(linreg)[[2]],linetype="dotted",linewidth=.75)+
+  
+  
+  geom_hex(binwidth=.1)+
+  #scale_color_manual(breaks=c("1:1","Lin.Regression"),values="black","red")+
+  scale_linetype_manual(breaks=c("1:1","Lin.Regression"),values="dotted","solid")+
+  scale_fill_viridis_c(breaks=c(1,2,5,10,20),
+                       trans = scales::pseudo_log_trans(sigma = 0.001))+
+  annotate(geom="label",x=0,y=5.5,label=paste0("TOC = ",format(linreg$coefficients[[2]],digits=3)," + ",format(linreg$coefficients[[2]],digits=3)," * CORG\nR2=",
+                                             format(linreg_summary$r.squared,digits=3)),hjust=0)+
+  theme_pubr()+
+  xlab("CORG [M-%]")+
+  ylab("TOC [M-%]")+
+  theme(legend.position = "inside",legend.position.inside = c(.9,.2))
+}
+# note: some NAs omitted by ggplot: BfUL data without CORG reference 
+###########################################################################
+###########################################################################
+plot(p0)
+plot(p)
+
+
+
+
+
+# note: 97 NAs omitted by ggplot: BfUL data without CORG reference 
+plot(p)
+# update if BfUL data avail
+nrow(BDF_Zeitreihe_soliTOC_all%>%filter(str_starts(Name,"LC")&!is.na(CORG)))
+
+
+png(paste0(code_dir,"GitLab/phd_code/R_main/temp/soliTOC_hexbin.png"),height = 2000,width=4000,res=400)
+plot(p)
+dev.off()
+
+
+
+
+
+nrow(all_prep%>%filter(!is.na(CORG)&str_starts(Name,"LC")))
+
+
+
+  # geom_point(data=(left_join(
+  #   BDF_Zeitreihe_soliTOC_duplicated,
+  #   lookup,
+  #   by=c("Name"="Lab_ID"))%>%
+  #     left_join(BDF_complete,by="ProbenNr")
+  #   )[
+  #     which(!paste(BDF_Zeitreihe_soliTOC_duplicated$Datum,
+  #                  BDF_Zeitreihe_soliTOC_duplicated$Zeit)%in%
+  #             paste(BDF_Zeitreihe_soliTOC$Datum,
+  #                   BDF_Zeitreihe_soliTOC$Zeit)),],
+  #   aes(x=CORG,y=TOC),
+  #   shape=4,
+  #   size=1,
+  #   stroke=2,
+  #   col="red")#+
+
+  # geom_point(data=left_join(BDF_main_soliTOC_duplicated,
+  #                           tibble(sample_id=BDF_main$sample_id,BDF_main$BDF_database),
+  #                           by=c("Name"="sample_id"))%>%
+  #              filter(duplicated(Name)),
+  #            aes(x=CORG,y=TOC),shape=4,size=1,stroke=2)#+scale_x_log10()+scale_y_log10()
+
+# worst outliers not caused by inprecise meassurement or wrong sample id
+
+
+# bad measurements
+# these are the ones that are not yet measured but weighed in during export
+filter(BDF_Zeitreihe_soliTOC_all,TOC==0)
+
+filter(BDF_Zeitreihe_soliTOC_all,!TOC==0)%>%
+  filter(abs(TOC-(.07149+.88302*CORG))>1)%>%pull(Name)
+
+```
+
+#ROC_ratio of all sites
+```{r}
+
+
+#TOC vs ROC for individual BDF -> ratios stable at sites but differs slightly between sites
+ggplotly(
+  ggplot(all_prep%>%filter(Projekt%in%BDF_list)%>%
+           mutate(Info=paste(Name,"|",HORIZONT,"| Yr:",year(PDATUM),
+                             oTief,"-",
+                             uTief,"cm ||",
+                             Nutzung,"|",
+                             VORNUTZUNG)),
+         aes(x=TOC,y=ROC,col=Projekt,text=Info))+
+    geom_point(alpha=.5)+
+    geom_smooth(aes(group=paste(Projekt,HORIZONT)),method="glm",se=F)+
+    geom_abline(intercept = 0,slope = .1)+
+    xlim(range(BDF_Zeitreihe_soliTOC_merge$TOC))+
+    ylim(range(BDF_Zeitreihe_soliTOC_merge$ROC))+
+    scale_x_log10()+scale_y_log10()
+)
+
+
+
+
+
+
+  ggplot(all_prep%>%
+           filter(Projekt%in%BDF_list)%>%
+           mutate(Info=paste(Name,"|",Horizont,"| Yr:",year(PDATUM),
+                             oTief,"-",
+                             uTief,"cm ||",
+                             Nutzung,"|",                             VORNUTZUNG)),
+         aes(x=TOC,y=ROC))+
+    
+    geom_smooth(method="glm",aes(group=paste(Projekt),linetype=Nutzung,col=Projekt),se=F,alpha=.5)+
+    geom_point(alpha=.5,aes(fill=Projekt,shape=Nutzung))+
+    geom_abline(intercept = 0,slope = .1)+
+    annotate(x=5.25,y=.525,geom="label",label="10 %")+
+    xlim(range(all_prep$TOC))+
+    ylim(range(all_prep$ROC))+
+    scale_fill_discrete()+
+    scale_color_discrete()+
+    scale_shape_manual(breaks=c("A","G"),values=c(21,24))+
+    scale_linetype_manual(breaks=c("A","G"),values=c("solid","dashed"))+
+    xlab("TOC[M-%]")+
+    ylab("ROC [M-%]")+
+    
+    theme_pubr()+
+    theme(legend.position = "right")
+  
+  
+  
+   ggplot(all_prep%>%
+           filter(Projekt%in%BDF_list)%>%
+           mutate(Info=paste(Name,"|",Horizont,"| Yr:",year(PDATUM),
+                             oTief,"-",
+                             uTief,"cm ||",
+                             Nutzung,"|",                             VORNUTZUNG)),
+         aes(x=TOC,y=ROC))+
+    
+    geom_smooth(method="glm",aes(group=paste(Projekt),linetype=Nutzung,col=Projekt),se=F,alpha=.5)+
+    geom_point(alpha=.5,aes(fill=Projekt,shape=Nutzung))+
+    geom_abline(intercept = 0,slope = .1)+
+    annotate(x=5.25,y=.525,geom="label",label="10 %")+
+    #xlim(range(all_prep$TOC))+
+    #ylim(range(all_prep$ROC))+
+    scale_fill_discrete()+
+    scale_color_discrete()+
+    scale_shape_manual(breaks=c("A","G"),values=c(21,24))+
+    scale_linetype_manual(breaks=c("A","G"),values=c("solid","dashed"))+
+    xlab("TOC [M-%]")+
+    ylab("ROC [M-%]")+
+    theme_pubr()+
+    theme(legend.position = "right")+
+    coord_cartesian(xlim = c(0,3),ylim=c(0,.4))
+   
+   
+   
+   
+   
+  pA1=ggplot(all_prep%>%
+           filter(Projekt%in%BDF_list&Nutzung=="A"),
+         aes(x=TOC,y=ROC))+
+    geom_smooth(method="glm",aes(group=Projekt,col=Projekt),se=F,alpha=.5,linetype="dashed")+
+    #geom_rect(xmin=0,ymin=0,xmax=1.5,ymax=.15,fill="lightgray")+
+    geom_point(alpha=.5,aes(fill=Projekt,col=Projekt,shape=Projekt))+
+    geom_abline(intercept = 0,slope = .1)+    
+    annotate(x=4,y=.4,geom="label",label="10 %")+
+    
+      geom_abline(slope =c(
+        #.01,
+        .05,
+        #.075,
+        
+        #.125,
+        .15#,
+        #.25
+        ),
+        linetype="dotted",linewidth=.5)+
+   # annotate(x=3,y=3*.01,geom="label",label="1 %")+
+    annotate(x=3,y=3*.05,geom="label",label="5 %")+
+    #annotate(x=4,y=4*.075,geom="label",label="7.5 %")+
+    #annotate(x=3.2,y=3.2*.125,geom="label",label="12.5 %")+
+    annotate(x=8/3,y=8/3*.15,geom="label",label="15 %")+
+    #annotate(x=1.6,y=1.6*.25,geom="label",label="25 %")+
+    
+   # xlim(range(all_prep%>%filter(Nutzung=="A")%>%pull(TOC)))+
+   # ylim(range(all_prep%>%filter(Nutzung=="A")%>%pull(ROC)))+
+    scale_fill_colorblind()+
+    scale_color_colorblind()+
+    scale_shape_manual(breaks=paste0("BDF",c("02",12,22,23,24,35,43,46)),values=c(21:25,15:17))+
+    xlab("TOC [M-%]")+
+    ylab("ROC [M-%]")+
+    theme_pubr()+
+    theme(legend.position = "inside",legend.position.inside = c(1,0),legend.justification.inside = c(1,0))+
+    ggtitle("Acker")
+ 
+   
+  pA1_insert=ggplot(all_prep%>%
+           filter(Projekt%in%BDF_list&Nutzung=="A"),
+         aes(x=TOC,y=ROC))+
+    geom_smooth(method="glm",aes(group=Projekt,col=Projekt),se=F,alpha=.5,linetype="dashed")+
+    geom_rect(xmin=0,ymin=0,xmax=1.5,ymax=.15,fill="lightgray")+
+    geom_point(alpha=.5,aes(fill=Projekt,col=Projekt,shape=Projekt))+
+    geom_abline(intercept = 0,slope = .1)+
+    annotate(x=4,y=.4,geom="label",label="10 %")+
+    #xlim(range(all_prep$TOC))+
+    #ylim(range(all_prep$ROC))+
+    scale_fill_colorblind()+
+    scale_color_colorblind()+
+    scale_shape_manual(breaks=paste0("BDF",c("02",12,22,23,24,35,43,46)),values=c(21:25,15:17))+
+    xlab("TOC [M-%]")+
+    ylab("ROC [M-%]")+
+    theme_pubr()+
+    theme(legend.position = "inside",legend.position.inside = c(1,0),legend.justification.inside = c(1,0))+
+    ggtitle("Acker")
+ 
+
+  pA2=ggplot(all_prep%>%
+           filter(Projekt%in%BDF_list&Nutzung=="A"),
+         aes(x=TOC,y=ROC))+
+    geom_smooth(method="glm",aes(group=Projekt,col=Projekt),se=F,alpha=.5,linetype="dashed")+
+    geom_point(alpha=.5,aes(fill=Projekt,col=Projekt,shape=Projekt))+
+    geom_abline(intercept = 0,slope = .1)+
+    #annotate(x=.01,y=.001,geom="label",label="10 %")+
+    #xlim(range(all_prep$TOC))+
+    #ylim(range(all_prep$ROC))+
+    scale_fill_colorblind()+
+    scale_color_colorblind()+
+    scale_shape_manual(breaks=paste0("BDF",c("02",12,22,23,24,35,43,46)),values=c(21:25,15:17))+
+    #xlab("TOC[M-%]")+
+    #ylab("ROC [M-%]")+
+    theme_pubr()+
+    theme(legend.position = "none",axis.title = element_blank())+
+    coord_cartesian(xlim = c(0,1.5),y=c(0,.15))
+  
+
+    pG1=ggplot(all_prep%>%
+           filter(Projekt%in%BDF_list&Nutzung=="G"),
+         aes(x=TOC,y=ROC))+
+    geom_smooth(method="glm",aes(group=Projekt,col=Projekt),se=F,alpha=.5,linetype="dashed")+
+    geom_point(alpha=.5,aes(fill=Projekt,col=Projekt,shape=Projekt))+
+    geom_abline(intercept = 0,slope = .1)+    
+    annotate(x=5,y=.5,geom="label",label="10 %")+
+    
+      geom_abline(slope = c(
+        #.01,
+        .05,
+        #.075,
+        #.125,
+        .15#,
+       # .25
+        ),linetype="dotted",linewidth=.5)+
+  #  annotate(x=4,y=4*.01,geom="label",label="1 %")+
+    annotate(x=5,y=5*.05,geom="label",label="5 %")+
+  #  annotate(x=4,y=4*.075,geom="label",label="7.5 %")+
+   # annotate(x=4,y=4*.125,geom="label",label="12.5 %")+
+    annotate(x=6,y=6*.15,geom="label",label="15 %")+
+  #  annotate(x=4,y=4*.25,geom="label",label="25 %")+
+      
+    #xlim(range(all_prep$TOC))+
+    #ylim(range(all_prep$ROC))+
+    scale_fill_colorblind()+
+    scale_color_colorblind()+
+    scale_shape_manual(breaks=paste0("BDF",c(13,30,33,42)),values=c(21:25))+
+    xlab("TOC [M-%]")+
+    ylab("ROC [M-%]")+
+    theme_pubr()+
+    theme(legend.position = "inside",legend.position.inside = c(1,0),legend.justification.inside = c(1,0))+
+    ggtitle("Grünland")
+
+pA2
+ggsave(filename = "ROC_TOC_scatter_Acker.png",plot = pA1,device = "png",path = paste0(code_dir,"GitLab/phd_code/R_main/temp/"),width=6,height=6)
+ggsave(filename = "ROC_TOC_scatter_Acker_rect.png",plot = pA1_insert,device = "png",path = paste0(code_dir,"GitLab/phd_code/R_main/temp/"),width=6,height=6)
+ggsave(filename = "ROC_TOC_scatter_Acker_zoom.png",plot = pA2,device = "png",path = paste0(code_dir,"GitLab/phd_code/R_main/temp/"),width=6,height=6,scale=.5)
+ggsave(filename = "ROC_TOC_scatter_Grünland.png",plot = pG1,device = "png",path = paste0(code_dir,"GitLab/phd_code/R_main/temp/"),width=6,height=6)
+
+```
+
+
+
+# stat summaries for BDFs, landuse, soil horizon
+```{r}
+# x_min,...y_min... format
+summarize_by_groups <- function(data, group_vars, summary_vars) {
+  # Ensure group_vars and summary_vars are character vectors
+  #group_vars <- rlang::syms(group_vars)
+  #summary_vars <- rlang::syms(summary_vars)
+  
+  data %>%
+    group_by(.dots=group_vars) %>%
+    summarise(
+      across(all_of(summary_vars), list(
+        n = ~ length(na.omit(.)),
+        min = ~ min(., na.rm = TRUE),
+        mean = ~ mean(., na.rm = TRUE),
+        max = ~ max(., na.rm = TRUE),
+        median = ~ median(.),
+        sd = ~ sd(., na.rm = TRUE)
+      ), .names = "{.col}_{.fn}"),
+      .groups = 'drop'  # Avoids keeping the grouping structure
+    )
+}
+
+
+
+
+all_prep%>%mutate(rocratio=ROC/TOC)%>%ggplot()+geom_density(alpha=.1,aes(x=rocratio,group=Projekt,col=Projekt,fill=Projekt,y=after_stat(density)))+theme_pubr()
+
+
+#Nutzung        
+# summarize_by_groups(all_prep%>%mutate(ROC_ratio=ROC/TOC),group_vars = c("Nutzung"),summary_vars =c("TOC400","ROC","TIC900","TOC","TC","ROC_ratio"))
+Nutzung_soliTOC_summary=summarise_metrics(all_prep%>%mutate(ROC_ratio=ROC/TOC),grouping_variables = c("Nutzung"),variables =  c("TOC400","ROC","TIC900","TOC","TC","ROC_ratio"))
+
+#BDF        
+#summarize_by_groups(all_prep%>%mutate(ROC_ratio=ROC/TOC),group_vars = #c("Nutzung","Projekt"),summary_vars = c("TOC400","ROC","TIC900","TOC","TC","ROC_ratio"))
+
+Projekt_soliTOC_summary=summarise_metrics(all_prep%>%mutate(ROC_ratio=ROC/TOC),grouping_variables = c("Nutzung","Projekt"),variables =  c("TOC400","ROC","TIC900","TOC","TC","ROC_ratio"))
+
+
+# Horizont, BfUL == NA (no metadata)
+#summarize_by_groups(all_prep%>%mutate(ROC_ratio=ROC/TOC),group_vars = c("Nutzung","Projekt","Horizont"),summary_vars = c("TOC400","ROC","TIC900","TOC","TC","ROC_ratio"))
+
+HORIZONT_soliTOC_summary=summarise_metrics(all_prep%>%mutate(ROC_ratio=ROC/TOC),grouping_variables = c("Nutzung","Projekt","HORIZONT"),variables =  c("TOC400","ROC","TIC900","TOC","TC","ROC_ratio"))
+
+View(Nutzung_soliTOC_summary)
+View(Projekt_soliTOC_summary)
+View(HORIZONT_soliTOC_summary)
+
+```
+
+# simple correlation
+```{r}
+
+all_prep%>%mutate(ratio=ROC/TOC)%>%
+  group_by(Projekt)%>%
+  summarise(cor=cor.test(ratio,TOC)[["estimate"]],
+            p=cor.test(ratio,TOC)[["p.value"]],
+            test=cor.test(ratio,TOC)[["method"]])%>%
+  filter(p<.05) # only signif. cor
+
+ggplot(all_prep%>%select(TOC,ROC,uTief,oTief,Projekt)%>%na.omit,aes(x=TOC,y=ROC/TOC))+
+  geom_point(aes(col=(uTief+oTief)/2))+
+  geom_smooth(method="glm",se=F,col="red")+
+  facet_wrap(~Projekt,scales="free")+ # ----------free scales or not?
+  xlab("TOC [M-%]")+
+  ylab("ROC ratio [M-% / M-%]")+
+  scale_color_viridis_c("Mittlere Tiefe")+
+  theme_pubr()
+  
+
+
+```
+
+
+
+
+#####random EDA ideas
+```{r}
+BDF_Zeitreihe_soliTOC_all%>%
+plot_ly(x=~TOC,y=~ROC,z=~Nt,color=~NUTZUNG,size=.2,alpha=1)
+
+
+# random ideas
+mutate(BDF_Zeitreihe_soliTOC_all,
+       CN=TOC/Nt,
+       CP=TOC/Pt,
+       NP=Nt/Pt,
+       ROCratio=ROC/TOC,
+       RN=ROC/Nt,
+       RP=ROC/Pt,
+       CR=TOC/ROC)%>%plot_ly(
+         x=~as.POSIXct(PDATUM),y=~RN,z=~RP,color=~NUTZUNG,size=.2,alpha=1
+       )
+
+
+
+ggplot(all_prep%>%
+           filter(Projekt%in%BDF_list&Nutzung=="A"),
+         aes(x=uTief,y=ROC))+
+    geom_smooth(method="glm",aes(group=Projekt,col=Projekt),se=F,alpha=.5,linetype="dashed")+
+    geom_point(alpha=.5,aes(fill=Projekt,col=Projekt,shape=Projekt))+
+   # geom_abline(intercept = 0,slope = .1)+
+   # annotate(x=4,y=.4,geom="label",label="10 %")+
+    #xlim(range(all_prep$TOC))+
+    #ylim(range(all_prep$ROC))+
+    scale_fill_colorblind()+
+    scale_color_colorblind()+
+    scale_shape_manual(breaks=paste0("BDF",c("02",12,22,23,24,35,43,46)),values=c(21:25,15:17))+
+    #xlab("TOC[M-%]")+
+    #ylab("ROC [M-%]")+
+    theme_pubr()+
+    theme(legend.position = "right")+
+  scale_x_reverse()+
+  coord_flip()
+
+# Ratio Tiefe
+ggplot(all_prep%>%
+           filter(Projekt%in%BDF_list&Nutzung=="A"),
+         aes(x=uTief,y=ROC/TOC))+
+    geom_smooth(method="glm",aes(group=Projekt,col=Projekt),se=F,alpha=.5,linetype="dashed")+
+    geom_point(alpha=.5,aes(fill=Projekt,col=Projekt,shape=Projekt))+
+   # geom_abline(intercept = 0,slope = .1)+
+   # annotate(x=4,y=.4,geom="label",label="10 %")+
+    #xlim(range(all_prep$TOC))+
+    #ylim(range(all_prep$ROC))+
+    scale_fill_colorblind()+
+    scale_color_colorblind()+
+    scale_shape_manual(breaks=paste0("BDF",c("02",12,22,23,24,35,43,46)),values=c(21:25,15:17))+
+    #xlab("TOC[M-%]")+
+    #ylab("ROC [M-%]")+
+    theme_pubr()+
+    theme(legend.position = "right")+
+  scale_x_reverse()+
+  coord_flip()
+
+
+```
+
+
+
+
+```{r}
+ggplot(BDF_Zeitreihe_soliTOC_all%>%filter(Projekt%in%paste0("BDF",c("02",12,13,22,23,24,30,33,35,42,43,46))),aes(xmin=`obere Probentiefe`,xmax=`untere Probentiefe`,y=as.POSIXct(PDATUM),col=substr(as.character(Horizont),1,99)))+geom_linerange()+
+  coord_flip()+scale_x_reverse()+facet_grid(facets =vars(Projekt))
+
+
+
+#Bodentyp z.T. unterschiedlich klassifieziert
+d=(BDF_Zeitreihe_soliTOC_all%>%
+           filter(Projekt%in%paste0("BDF",c("02",12,13,22,23,24,30,33,35,42,43,46)))%>%
+           select(`obere Probentiefe`,
+                  `untere Probentiefe`,
+                  TOC,
+                  Horizont,
+                  PDATUM,
+                  Projekt,
+                  SchichtID,
+                  Bodentyp)%>%rename(oTief=`obere Probentiefe`,
+                                     uTief=`untere Probentiefe`)%>%
+           na.omit)
+ p=ggplot(d,
+         aes(ymin=oTief,
+             ymax=uTief,
+             x=as.POSIXct(PDATUM),
+             fill=Horizont,
+             col=Horizont))+
+   geom_ribbon(alpha=.3)+
+   geom_linerange()+
+  #coord_flip()+
+   scale_y_reverse()+
+    facet_wrap(facets=vars(Projekt),ncol=1)
+
+
+ggplotly(p)
+ 
+
+
+
+
+```
+#### #### END of soliTOC EDA ####
+# #############################################################################
+#### #### DRIFTS EDA #### 
+# pca
+```{r}
+pc=pca(BDF_Zeitreihe_spc$spc_sg_snv,ncomp = 50,method = "nipals")
+pc$calres$scores%>%as_tibble()%>%cbind(BDF_Zeitreihe_spc)->pc_merge
+
+
+
+saveRDS(pc,paste0(code_dir,"GitLab/phd_code/R_main/temp/BDF_zeitreihe_spc_snv"))
+pc=readRDS(paste0(code_dir,"GitLab/phd_code/R_main/temp/BDF_zeitreihe_spc_snv"))
+
+pc_merge=BDF_Zeitreihe_spc
+pc_merge=cbind(pc_merge,pc$calres$scores)
+pc_merge_unnest=pc_merge%>%unnest(pc)
+
+# correlating spectra derived pc with variables in BDF database + soliTOC
+as_tibble(cor(select_if(pc_merge_unnest,.predicate = function(x){is.numeric(x)&tmp_fun(x)}),use="pairwise.complete.obs",method="spearman"))%>%select(`Comp 1`,`Comp 2`,`Comp 3`)%>%cbind(var=select_if(pc_merge_unnest,.predicate = function(x){is.numeric(x)&tmp_fun(x)})%>%names)->all_cor
+
+
+left_join(all_prep_flag,tibble(sample_id=pc_merge$sample_id,pc=select(pc_merge,all_of(names(pc_merge)[which(str_detect(names(pc_merge),"Comp"))]))),by=c("Name"="sample_id"))->pc_merge_prep
+
+
+pc_merge_unnest=unnest(pc_merge_prep,pc)
+
+pc_corTable_data=select(pc_merge_unnest,
+                        `Comp 1`,`Comp 2`,`Comp 3`,
+                        Ct,CORG,TC,TOC,TOC400,ROC,TIC900,
+                        Nt,Pt,K_t,Fe_t,Al_t,`T`,U,S)
+
+png(paste0(code_dir,"GitLab/phd_code/R_main/temp/pca123_corrplot.png"),
+    width=1000,height=1000)
+corrplot::corrplot.mixed(cor(pc_corTable_data,use="pairwise.complete.obs",method = "spearman"),lower.col = "black")
+dev.off()
+```
+
+# pca plots
+```{r}
+
+
+(
+ggplot(pc_merge_prep,aes(x=pc$`Comp 1`,y=pc$`Comp 2`,col=Projekt))+
+  geom_point()+
+  theme_pubr()+
+    xlab(paste0("PC1 (",pc$calres$expvar[[1]]%>%format(digits=3,nsmall=1),"%)"))+  
+    ylab(paste0("PC2 (",pc$calres$expvar[[2]]%>%format(digits=3,nsmall=1),"%)"))+theme(legend.position = "none"))%>%ggsave(filename = paste0(code_dir,"GitLab/phd_code/R_main/temp/Zeitreihe_spc_pca12.png"),device = "png",width = 5,height = 5)
+
+(
+ggplot(pc_merge_prep,aes(x=pc$`Comp 1`,y=pc$`Comp 2`,col=Projekt))+
+  geom_point()+
+  theme_pubr()+
+    xlab(paste0("PC1 (",pc$calres$expvar[[1]]%>%format(digits=3,nsmall=1),"%)"))+  
+    ylab(paste0("PC2 (",pc$calres$expvar[[2]]%>%format(digits=3,nsmall=1),"%)"))+theme(legend.position = "top")+guides(color=guide_legend(nrow=2)))%>%ggsave(filename = paste0(code_dir,"GitLab/phd_code/R_main/temp/Zeitreihe_spc_pcaLeg.png"),device = "png",width = 10,height = 5)
+
+
+(
+ggplot(pc_merge_prep,aes(x=pc$`Comp 1`,y=pc$`Comp 3`,col=Projekt))+
+  geom_point()+
+  theme_pubr()+
+    xlab(paste0("PC1 (",pc$calres$expvar[[1]]%>%format(digits=3,nsmall=1),"%)"))+  
+    ylab(paste0("PC3 (",pc$calres$expvar[[3]]%>%format(digits=3,nsmall=1),"%)"))+theme(legend.position = "none"))%>%ggsave(filename = paste0(code_dir,"GitLab/phd_code/R_main/temp/Zeitreihe_spc_pca13.png"),device = "png",width = 5,height = 5)
+```
+
+
+# spc plot
+```{r}
+## spc plot ####
+if(F){
+  (spectra_plotter(BDF_Zeitreihe%>%unnest(BDF_database),col_var = "Projekt",spc_id = "spc_sg_bl_rs4",reverse_x = T,leg_pos = "right")+xlab(expression("Wellenzahl c"*m^-1))+ylab("Absorption")+scale_x_log10()+ guides(colour = guide_legend(override.aes = list(alpha = 1))))%>%ggsave(filename = paste0(code_dir,"GitLab/phd_code/R_main/temp/Zeitreihe_spc.png"),device = "png",width = 10,height = 6)
+}
+
+  # avg
+  (
+  BDF_Zeitreihe%>%unnest(BDF_database)%>%select(Projekt,spc_sg_bl_rs4)%>%mutate(spc_sg_bl_rs4=data.frame(spc_sg_bl_rs4))%>%unnest(spc_sg_bl_rs4)%>%group_by(Projekt)%>%na.omit%>%summarise_all(mean)%>%rename_with(~str_remove(.,"X"))%>%
+  
+    pivot_longer(
+    cols = colnames(.)[-c(1)], #not ID
+    names_to = "wavenumber",
+    names_transform = list("wavenumber"=as.numeric),
+    values_to = "absorbance"
+)%>%
+    ggplot(aes(x=wavenumber,y=absorbance,col=Projekt,group=Projekt))+ #group_id for individual spc lines
+    geom_line()+
+    theme_minimal()+
+    scale_color_discrete("BDF")+
+    theme(legend.position = "right"))%>%ggplotly
+  
+  
+```
+#### #### DRIFTS model predictions ####
+```{r}
+
+pre_process_set_manual="spc_sg1d_rs4"
+trans_manual="log1p"
+
+{
+  Ct_pred=predict_variable(
+    target_data = BDF_Zeitreihe%>%
+      filter(!is.na(spc[,1])), # only with spc avail
+      model_folder=paste0(data_dir,"BDF/BDF-SSL/2_models/2_Cubist_models/"),
+      eval_model_folder=model_folder, # mbl needs different dir
+      prefix="cubist_",
+      variable_="Ct",
+      metric="test.rmse",
+      maximise=F,
+      restrict=T,
+      diss_limit=2.5,
+      manual=paste0("cubist_",pre_process_set_manual,"-",trans_manual,"-Ct")
+  )
+  
+  CORG_pred=predict_variable(
+    target_data = BDF_Zeitreihe%>%
+      filter(!is.na(spc[,1])), # only with spc avail
+      model_folder=paste0(data_dir,"BDF/BDF-SSL/2_models/2_Cubist_models/"),
+      eval_model_folder=model_folder, # mbl needs different dir
+      prefix="cubist_",
+      variable_="CORG",
+      metric="test.rmse",
+      maximise=F,
+      restrict=T,
+      diss_limit=2.5,
+      manual=paste0("cubist_",pre_process_set_manual,"-",trans_manual,"-CORG")
+  )
+  
+  
+  
+  TC_pred=predict_variable(
+    target_data = BDF_Zeitreihe%>%
+      filter(!is.na(spc[,1])), # only with spc avail
+      model_folder=paste0(data_dir,"BDF/BDF-SSL/2_models/2_Cubist_models/"),
+      eval_model_folder=model_folder, # mbl needs different dir
+      prefix="cubist_",
+      variable_="TC",
+      metric="test.rmse",
+      maximise=F,
+      restrict=T,
+      diss_limit=2.5,
+      manual=paste0("cubist_",pre_process_set_manual,"-",trans_manual,"-TC")
+  )
+  
+  
+  
+  
+  
+  TOC_pred=predict_variable(
+    target_data = BDF_Zeitreihe%>%
+      filter(!is.na(spc[,1])), # only with spc avail
+      model_folder=paste0(data_dir,"BDF/BDF-SSL/2_models/2_Cubist_models/"),
+      eval_model_folder=model_folder, # mbl needs different dir
+      prefix="cubist_",
+      variable_="TOC",
+      metric="test.rmse",
+      maximise=F,
+      restrict=T,
+      diss_limit=2.5,
+      manual=paste0("cubist_",pre_process_set_manual,"-",trans_manual,"-TOC")
+  )
+  
+  
+  TOC400_pred=predict_variable(
+    target_data = BDF_Zeitreihe%>%
+      filter(!is.na(spc[,1])), # only with spc avail
+      model_folder=paste0(data_dir,"BDF/BDF-SSL/2_models/2_Cubist_models/"),
+      eval_model_folder=model_folder, # mbl needs different dir
+      prefix="cubist_",
+      variable_="TOC400",
+      metric="test.rmse",
+      maximise=F,
+      restrict=T,
+      diss_limit=2.5,
+      manual=paste0("cubist_",pre_process_set_manual,"-",trans_manual,"-TOC400")
+  )
+  
+  
+  
+  ROC_pred=predict_variable(
+    target_data = BDF_Zeitreihe%>%
+      filter(!is.na(spc[,1])), # only with spc avail
+      model_folder=paste0(data_dir,"BDF/BDF-SSL/2_models/2_Cubist_models/"),
+      eval_model_folder=model_folder, # mbl needs different dir
+      prefix="cubist_",
+      variable_="ROC",
+      metric="test.rmse",
+      maximise=F,
+      restrict=T,
+      diss_limit=2.5,
+      manual=paste0("cubist_",pre_process_set_manual,"-",trans_manual,"-ROC")
+  )
+  
+  
+  TIC900_pred=predict_variable(
+    target_data = BDF_Zeitreihe%>%
+      filter(!is.na(spc[,1])), # only with spc avail
+      model_folder=paste0(data_dir,"BDF/BDF-SSL/2_models/2_Cubist_models/"),
+      eval_model_folder=model_folder, # mbl needs different dir
+      prefix="cubist_",
+      variable_="TIC900",
+      metric="test.rmse",
+      maximise=F,
+      restrict=T,
+      diss_limit=2.5,
+      manual=paste0("cubist_",pre_process_set_manual,"-",trans_manual,"-TIC900")
+  )
+
+  TIC900_pred$predictions$pred
+  pred=tibble(sample_id=all_prep_flag$Name)
+  
+  
+  
+  for (pred_set in list(TOC400_pred,
+                    ROC_pred,
+                    TIC900_pred,
+                    TOC_pred,
+                    TC_pred,
+                    CORG_pred,
+                    Ct_pred)
+  ){
+    pred=left_join(pred,
+                   pred_set$predictions%>%
+                     rename(!!pred_set$model_name := pred),
+                   by="sample_id"
+                   )
+    
+  }
+  
+}
+
+
+{
+  BDF_Zeitreihe_pred=all_prep_flag%>%filter(!str_starts(Name,"LA"))
+  zeitreihe_pred_eval=c()
+  for (i in list(Ct_pred,CORG_pred,TC_pred,TOC_pred,TOC400_pred,ROC_pred,TIC900_pred)){
+    
+    ii=i$predictions
+    names(ii)[2]=i$model_name
+    BDF_Zeitreihe_pred=left_join(
+      BDF_Zeitreihe_pred,ii,by=c("Name"="sample_id")
+    )
+    
+    zeitreihe_pred_eval=bind_rows(
+      zeitreihe_pred_eval,
+      tibble(Model=i$model_name,
+             evaluate_model_adjusted(
+               BDF_Zeitreihe_pred,
+                obs=(i$model_name%>%str_split_fixed("-",3))[3],
+                pred=i$model_name
+                )
+      )
+    )
+    
+  }
+}
+
+
+
+```
+
+#### # # #  plot obspred res 
+```{r}
+if(F){
+# saved individual runs through console
+saveRDS(BDF_Zeitreihe_pred_snv,paste0(code_dir,"GitLab/phd_code/R_main/temp/BDF_zeitreihe_pred_snv"))
+#saveRDS(BDF_Zeitreihe_pred_sg1d,paste0(code_dir,"GitLab/phd_code/R_main/temp/BDF_zeitreihe_pred_sg1d"))
+
+saveRDS(zeitreihe_pred_eval_snv,paste0(code_dir,"GitLab/phd_code/R_main/temp/eval_zeitreihe_pred_snv"))
+#saveRDS(zeitreihe_pred_eval_sg1d,paste0(code_dir,"GitLab/phd_code/R_main/temp/e#val_zeitreihe_pred_sg1d"))
+}
+
+
+
+#load
+BDF_Zeitreihe_pred_snv=readRDS(paste0(code_dir,"GitLab/phd_code/R_main/temp/BDF_zeitreihe_pred_snv"))
+#BDF_Zeitreihe_pred_sg1d=readRDS(paste0(code_dir,"GitLab/phd_code/R_main/temp/BDF_zeitreihe_pred_sg1d"))
+
+zeitreihe_pred_eval_snv=readRDS(paste0(code_dir,"GitLab/phd_code/R_main/temp/eval_zeitreihe_pred_snv"))
+#zeitreihe_pred_eval_sg1d=readRDS(paste0(code_dir,"GitLab/phd_code/R_main/temp/eval_zeitreihe_pred_sg1d"))
+
+
+# checking if signif. diff. between preprocessings... not too bad, so sticking to log snv
+pred_plt=c()
+for (i in c("Ct","CORG","TC","TOC","TOC400","ROC","TIC900")){
+  pred_plt[[i]]=
+    plot(
+      ggplot(BDF_Zeitreihe_pred_sg1d,aes(x=.data[[i]],
+                                         y=.data[[paste0("cubist_spc_sg1d_rs4-log1p-",i)]]))+
+        geom_abline(slope=1)+
+        geom_point()+
+        geom_point(data=BDF_Zeitreihe_pred_snv,aes(y=.data[[paste0("cubist_spc_sg_snv_rs4-log1p-",i)]]),
+                   col="red")+
+        xlab(i)+
+        theme_pubr()
+    )
+
+}
+
+```
+
+
+# obspred for report TC
+```{r}
+
+### TC ###
+{
+linreg=lm(data=BDF_Zeitreihe_pred_snv,formula=`cubist_spc_sg_snv_rs4-log1p-TC`~TC)
+linreg_summary=summary(linreg)
+BDF_Zeitreihe_pred_snv%>%ggplot(aes(x=TC,
+                                    y=`cubist_spc_sg_snv_rs4-log1p-TC`))+
+  geom_abline(slope=1,linetype="dotted",linewidth=.75)+
+  #geom_point(aes(col=Projekt))+ 
+  geom_hex(binwidth=.1)+
+  geom_abline(slope=linreg$coefficients[[2]],
+              intercept=linreg$coefficients[[1]],col="red")+
+  
+  scale_fill_viridis_c(breaks=c(1,2,5,10,20),trans = scales::pseudo_log_trans(sigma = 0.001))+
+
+   annotate(geom="label",
+            x=0,y=6.5,
+            label=paste0("y = ",
+                         format(linreg$coefficients[[1]],digits=3),
+                         " + ",
+                         format(linreg$coefficients[[2]],digits=3),
+                         " * x\nr2=",
+                         format(linreg_summary$r.squared,digits=2),
+                          "\nRMSE=",
+                         zeitreihe_pred_eval_snv%>%
+                           filter(str_ends(Model,"TC"))%>%
+                           pull(rmse)%>%
+                        format(digits=3,nsmall=1),
+                         ", R2=",zeitreihe_pred_eval_snv%>%
+                           filter(str_ends(Model,"TC"))%>%
+                           pull(R2)%>%
+                           format(digits=2,nsmall=2)),
+            hjust=0)+
+  theme_pubr()+
+  xlab("TC Gemessen [M-%]")+
+  ylab("TC Vorhersage [M-%]")+
+  theme(legend.position = "inside",legend.position.inside = c(.9,.2))+
+  xlim(c(-.1,
+       max(
+        BDF_Zeitreihe_pred_snv$TC,
+        BDF_Zeitreihe_pred_snv$`cubist_spc_sg_snv_rs4-log1p-TC`,
+        na.rm = T
+        )+.1
+       )
+     )+
+  ylim(c(-.1,
+       max(
+        BDF_Zeitreihe_pred_snv$TC,
+        BDF_Zeitreihe_pred_snv$`cubist_spc_sg_snv_rs4-log1p-TC`,
+        na.rm = T
+        )+.1
+       )
+    )+ggtitle("TC")->pTC
+}
+ggsave(filename = "obspredTC.png",plot = pTC,device = "png",path = paste0(code_dir,"GitLab/phd_code/R_main/temp/"),width=6,height=6)
+
+
+```
+
+
+# obspred for report TOC
+```{r}
+
+### TOC ###
+{
+linreg=lm(data=BDF_Zeitreihe_pred_snv,formula=`cubist_spc_sg_snv_rs4-log1p-TOC`~TOC)
+linreg_summary=summary(linreg)
+BDF_Zeitreihe_pred_snv%>%ggplot(aes(x=TOC,
+                                    y=`cubist_spc_sg_snv_rs4-log1p-TOC`))+
+  geom_abline(slope=1,linetype="dotted",linewidth=.75)+
+  #geom_point(aes(col=Projekt))+ 
+  geom_hex(binwidth=.1)+
+  geom_abline(slope=linreg$coefficients[[2]],
+              intercept=linreg$coefficients[[1]],col="red")+
+  
+  scale_fill_viridis_c(breaks=c(1,2,5,10,20),trans = scales::pseudo_log_trans(sigma = 0.001))+
+
+   annotate(geom="label",
+            x=0,y=5.5,
+            label=paste0("y = ",
+                         format(linreg$coefficients[[1]],digits=3),
+                         " + ",
+                         format(linreg$coefficients[[2]],digits=3),
+                          " * x\nr2=",
+                         format(linreg_summary$r.squared,digits=2),
+                          "\nRMSE=",
+                         zeitreihe_pred_eval_snv%>%
+                           filter(str_ends(Model,"TOC"))%>%
+                           pull(rmse)%>%
+                        format(digits=3,nsmall=1),
+                         ", R2=",zeitreihe_pred_eval_snv%>%
+                           filter(str_ends(Model,"TOC"))%>%
+                           pull(R2)%>%
+                           format(digits=2,nsmall=2)),
+            hjust=0)+
+  theme_pubr()+
+  xlab("TOC Gemessen [M-%]")+
+  ylab("TOC Vorhersage [M-%]")+
+  theme(legend.position = "inside",legend.position.inside = c(.9,.2))+
+  xlim(c(-.1,
+       max(
+        BDF_Zeitreihe_pred_snv$TOC,
+        BDF_Zeitreihe_pred_snv$`cubist_spc_sg_snv_rs4-log1p-TOC`,
+        na.rm = T
+        )+.1
+       )
+     )+
+  ylim(c(-.1,
+       max(
+        BDF_Zeitreihe_pred_snv$TOC,
+        BDF_Zeitreihe_pred_snv$`cubist_spc_sg_snv_rs4-log1p-TOC`,
+        na.rm = T
+        )+.1
+       )
+    )+
+  ggtitle("TOC")->pTOC
+}
+ggsave(filename = "obspredTOC.png",plot = pTOC,device = "png",path = paste0(code_dir,"GitLab/phd_code/R_main/temp/"),width=6,height=6)
+
+
+```
+
+# obspred for report Ct
+```{r}
+
+### Ct ###
+{
+linreg=lm(data=BDF_Zeitreihe_pred_snv,formula=`cubist_spc_sg_snv_rs4-log1p-Ct`~Ct)
+linreg_summary=summary(linreg)
+BDF_Zeitreihe_pred_snv%>%ggplot(aes(x=Ct,
+                                    y=`cubist_spc_sg_snv_rs4-log1p-Ct`))+
+  geom_abline(slope=1,linetype="dotted",linewidth=.75)+
+  #geom_point(aes(col=Projekt))+ 
+  geom_hex(binwidth=.1)+
+  geom_abline(slope=linreg$coefficients[[2]],
+              intercept=linreg$coefficients[[1]],col="red")+
+  
+  scale_fill_viridis_c(breaks=c(1,2,5,10,20),trans = scales::pseudo_log_trans(sigma = 0.001))+
+
+   annotate(geom="label",
+            x=0,y=7,
+            label=paste0("y = ",
+                         format(linreg$coefficients[[1]],digits=3),
+                         " + ",
+                         format(linreg$coefficients[[2]],digits=3),
+                          " * x\nr2=",
+                         format(linreg_summary$r.squared,digits=2),
+                          "\nRMSE=",
+                         zeitreihe_pred_eval_snv%>%
+                           filter(str_ends(Model,"Ct"))%>%
+                           pull(rmse)%>%
+                        format(digits=3,nsmall=1),
+                         ", R2=",zeitreihe_pred_eval_snv%>%
+                           filter(str_ends(Model,"Ct"))%>%
+                           pull(R2)%>%
+                           format(digits=2,nsmall=2)),
+            hjust=0)+
+  theme_pubr()+
+  xlab("Ct Gemessen [M-%]")+
+  ylab("Ct Vorhersage [M-%]")+
+  theme(legend.position = "inside",legend.position.inside = c(.9,.2))+
+  xlim(c(-.1,
+       max(
+        BDF_Zeitreihe_pred_snv$Ct,
+        BDF_Zeitreihe_pred_snv$`cubist_spc_sg_snv_rs4-log1p-Ct`,
+        na.rm = T
+        )+.1
+       )
+     )+
+  ylim(c(-.1,
+       max(
+        BDF_Zeitreihe_pred_snv$Ct,
+        BDF_Zeitreihe_pred_snv$`cubist_spc_sg_snv_rs4-log1p-Ct`,
+        na.rm = T
+        )+.1
+       )
+    )+
+  ggtitle("Ct")->pCt
+}
+ggsave(filename = "obspredCt.png",plot = pCt,device = "png",path = paste0(code_dir,"GitLab/phd_code/R_main/temp/"),width=6,height=6)
+
+
+```
+
+# obspred for report Corg
+```{r}
+
+### corg ###
+{
+linreg=lm(data=BDF_Zeitreihe_pred_snv,formula=`cubist_spc_sg_snv_rs4-log1p-CORG`~CORG)
+linreg_summary=summary(linreg)
+BDF_Zeitreihe_pred_snv%>%ggplot(aes(x=CORG,
+                                    y=`cubist_spc_sg_snv_rs4-log1p-CORG`))+
+  geom_abline(slope=1,linetype="dotted",linewidth=.75)+
+  #geom_point(aes(col=Projekt))+ 
+  geom_hex(binwidth=.1)+
+  geom_abline(slope=linreg$coefficients[[2]],
+              intercept=linreg$coefficients[[1]],col="red")+
+  
+  scale_fill_viridis_c(breaks=c(1,2,5,10,20),trans = scales::pseudo_log_trans(sigma = 0.001))+
+
+   annotate(geom="label",
+            x=0,y=6.,
+            label=paste0("y = ",
+                         format(linreg$coefficients[[1]],digits=3),
+                         " + ",
+                         format(linreg$coefficients[[2]],digits=3),
+                         " * x\nr2=",
+                         format(linreg_summary$r.squared,digits=2),
+                         "\nRMSE=",
+                         zeitreihe_pred_eval_snv%>%
+                           filter(str_ends(Model,"CORG"))%>%
+                           pull(rmse)%>%
+                        format(digits=3,nsmall=1),
+                         ", R2=",zeitreihe_pred_eval_snv%>%
+                           filter(str_ends(Model,"CORG"))%>%
+                           pull(R2)%>%
+                           format(digits=2,nsmall=2)),
+            hjust=0)+
+  theme_pubr()+
+  xlab("CORG Gemessen [M-%]")+
+  ylab("CORG Vorhersage [M-%]")+
+  theme(legend.position = "inside",legend.position.inside = c(.9,.2))+
+  xlim(c(-.1,
+       max(
+        BDF_Zeitreihe_pred_snv$CORG,
+        BDF_Zeitreihe_pred_snv$`cubist_spc_sg_snv_rs4-log1p-CORG`,
+        na.rm = T
+        )+.1
+       )
+     )+
+  ylim(c(-.1,
+       max(
+        BDF_Zeitreihe_pred_snv$CORG,
+        BDF_Zeitreihe_pred_snv$`cubist_spc_sg_snv_rs4-log1p-CORG`,
+        na.rm = T
+        )+.1
+       )
+    )+ggtitle("CORG")->pCORG
+}
+
+ggsave(filename = "obspredCORG.png",plot = pCORG,device = "png",path = paste0(code_dir,"GitLab/phd_code/R_main/temp/"),width=6,height=6)
+
+
+```
+
+# obspred for report TOC400
+```{r}
+
+### TOC400 ###
+{
+linreg=lm(data=BDF_Zeitreihe_pred_snv,formula=`cubist_spc_sg_snv_rs4-log1p-TOC400`~TOC400)
+linreg_summary=summary(linreg)
+BDF_Zeitreihe_pred_snv%>%ggplot(aes(x=TOC400,
+                                    y=`cubist_spc_sg_snv_rs4-log1p-TOC400`))+
+  geom_abline(slope=1,linetype="dotted",linewidth=.75)+
+  #geom_point(aes(col=Projekt))+ 
+  geom_hex(binwidth=.1)+
+  geom_abline(slope=linreg$coefficients[[2]],
+              intercept=linreg$coefficients[[1]],col="red")+
+  
+  scale_fill_viridis_c(breaks=c(1,2,5,10,20),trans = scales::pseudo_log_trans(sigma = 0.001))+
+
+   annotate(geom="label",
+            x=0,y=5,
+            label=paste0("y = ",
+                         format(linreg$coefficients[[1]],digits=3),
+                         " + ",
+                         format(linreg$coefficients[[2]],digits=3),
+                         " * x\nr2=",
+                         format(linreg_summary$r.squared,digits=2),
+                         "\nRMSE=",
+                         zeitreihe_pred_eval_snv%>%
+                           filter(str_ends(Model,"TOC400"))%>%
+                           pull(rmse)%>%
+                        format(digits=3,nsmall=1),
+                         ", R2=",zeitreihe_pred_eval_snv%>%
+                           filter(str_ends(Model,"TOC400"))%>%
+                           pull(R2)%>%
+                           format(digits=2,nsmall=2)),
+            hjust=0)+
+  theme_pubr()+
+  xlab("TOC400 Gemessen [M-%]")+
+  ylab("TOC400 Vorhersage [M-%]")+
+  theme(legend.position = "inside",legend.position.inside = c(.9,.2))+
+  xlim(c(-.1,
+       max(
+        BDF_Zeitreihe_pred_snv$TOC400,
+        BDF_Zeitreihe_pred_snv$`cubist_spc_sg_snv_rs4-log1p-TOC400`,
+        na.rm = T
+        )+.1
+       )
+     )+
+  ylim(c(-.1,
+       max(
+        BDF_Zeitreihe_pred_snv$TOC400,
+        BDF_Zeitreihe_pred_snv$`cubist_spc_sg_snv_rs4-log1p-TOC400`,
+        na.rm = T
+        )+.1
+       )
+    )+
+  ggtitle("TOC400")->pTOC400
+}
+ggsave(filename = "obspredTOC400.png",plot = pTOC400,device = "png",path = paste0(code_dir,"GitLab/phd_code/R_main/temp/"),width=6,height=6)
+
+
+```
+
+
+
+# obspred for report ROC
+```{r}
+
+### ROC ###
+{
+linreg=lm(data=BDF_Zeitreihe_pred_snv,formula=`cubist_spc_sg_snv_rs4-log1p-ROC`~ROC)
+linreg_summary=summary(linreg)
+BDF_Zeitreihe_pred_snv%>%ggplot(aes(x=ROC,
+                                    y=`cubist_spc_sg_snv_rs4-log1p-ROC`))+
+  geom_abline(slope=1,linetype="dotted",linewidth=.75)+
+  #geom_point(aes(col=Projekt))+ 
+  geom_hex(binwidth=.1/6*.8)+
+  geom_abline(slope=linreg$coefficients[[2]],
+              intercept=linreg$coefficients[[1]],col="red")+
+  
+  scale_fill_viridis_c(breaks=c(1,2,5,10,20),trans = scales::pseudo_log_trans(sigma = 0.001))+
+
+   annotate(geom="label",
+            x=0,y=.7,
+            label=paste0("y = ",
+                         format(linreg$coefficients[[1]],digits=3),
+                         " + ",
+                         format(linreg$coefficients[[2]],digits=3),
+                         " * x\nr2=",
+                         format(linreg_summary$r.squared,digits=2),
+                         "\nRMSE=",
+                         zeitreihe_pred_eval_snv%>%
+                           filter(str_ends(Model,"ROC"))%>%
+                           pull(rmse)%>%
+                        format(digits=3,nsmall=1),
+                         ", R2=",zeitreihe_pred_eval_snv%>%
+                           filter(str_ends(Model,"ROC"))%>%
+                           pull(R2)%>%
+                           format(digits=2,nsmall=2)),
+            hjust=0)+
+  theme_pubr()+
+  xlab("ROC Gemessen [M-%]")+
+  ylab("ROC Vorhersage [M-%]")+
+  theme(legend.position = "inside",legend.position.inside = c(.9,.2))+
+  xlim(c(-.1/6*.8,
+       max(
+        BDF_Zeitreihe_pred_snv$ROC,
+        BDF_Zeitreihe_pred_snv$`cubist_spc_sg_snv_rs4-log1p-ROC`,
+        na.rm = T
+        )+.1/6*.8
+       )
+     )+
+  ylim(c(-.1/6*.8,
+       max(
+        BDF_Zeitreihe_pred_snv$ROC,
+        BDF_Zeitreihe_pred_snv$`cubist_spc_sg_snv_rs4-log1p-ROC`,
+        na.rm = T
+        )+.1/6*.8
+       )
+    )+
+  ggtitle("ROC")->pROC
+}
+ggsave(filename = "obspredROC.png",plot = pROC,device = "png",path = paste0(code_dir,"GitLab/phd_code/R_main/temp/"),width=6,height=6)
+
+
+```
+
+
+
+
+# obspred for report TIC900
+```{r}
+
+### TIC900 ###
+{
+linreg=lm(data=BDF_Zeitreihe_pred_snv,formula=`cubist_spc_sg_snv_rs4-log1p-TIC900`~TIC900)
+linreg_summary=summary(linreg)
+BDF_Zeitreihe_pred_snv%>%ggplot(aes(x=TIC900,
+                                    y=`cubist_spc_sg_snv_rs4-log1p-TIC900`))+
+  geom_abline(slope=1,linetype="dotted",linewidth=.75)+
+  #geom_point(aes(col=Projekt))+ 
+  geom_hex(binwidth=.1/6*.4)+
+  geom_abline(slope=linreg$coefficients[[2]],
+              intercept=linreg$coefficients[[1]],col="red")+
+  
+  scale_fill_viridis_c(breaks=c(1,2,5,10,20,50,100),trans = scales::pseudo_log_trans(sigma = 0.001))+
+
+   annotate(geom="label",
+            x=0,y=0.4,
+            label=paste0("y = ",
+                         format(linreg$coefficients[[1]],digits=3),
+                         " + ",
+                         format(linreg$coefficients[[2]],digits=3),
+                         " * x\nr2=",
+                         format(linreg_summary$r.squared,digits=2),
+                         "\nRMSE=",
+                         zeitreihe_pred_eval_snv%>%
+                           filter(str_ends(Model,"TIC900"))%>%
+                           pull(rmse)%>%
+                        format(digits=3,nsmall=1),
+                         ", R2=",zeitreihe_pred_eval_snv%>%
+                           filter(str_ends(Model,"TIC900"))%>%
+                           pull(R2)%>%
+                           format(digits=2,nsmall=2)),
+            hjust=0)+
+  theme_pubr()+
+  xlab("TIC900 Gemessen [M-%]")+
+  ylab("TIC900 Vorhersage [M-%]")+
+  theme(legend.position = "inside",legend.position.inside = c(.9,.2))+
+  xlim(c(-.1/6*.4,
+       max(
+        BDF_Zeitreihe_pred_snv$TIC900,
+        BDF_Zeitreihe_pred_snv$`cubist_spc_sg_snv_rs4-log1p-TIC900`,
+        na.rm = T
+        )+.1/6*.4
+       )
+     )+
+  ylim(c(-.1/6*.4,
+       max(
+        BDF_Zeitreihe_pred_snv$TIC900,
+        BDF_Zeitreihe_pred_snv$`cubist_spc_sg_snv_rs4-log1p-TIC900`,
+        na.rm = T
+        )+.1/6*.4
+       )
+    )+
+  ggtitle("TIC900")->pTIC900
+}
+
+ggsave(filename = "obspredTIC900.png",plot = pTIC900,device = "png",path = paste0(code_dir,"GitLab/phd_code/R_main/temp/"),width=6,height=6)
+
+
+```
+# obspred grouped plot
+```{r}
+
+ggplot()+annotate(geom="label",x=0,y=0,
+                  label=
+"Vorhersagen für die erweiterten Rückstellproben berechnet mit den Cubist\n Modellen, die mit log(1+p) transformierte Zielvariablen für die\n Standard-Normal-Variate-korrigierten Spektren (cubist_spc_sg_snv_rs4-log1p-...)\n kalibriert wurden")+theme_void()->label_plt
+
+ggarrange(
+        pCt,
+        pCORG,
+        pTC,
+        pTOC,
+        pTOC400,
+        pROC,
+        pTIC900,
+        #label_plt,
+        nrow=3,
+        ncol=3)->pALL
+
+ggsave(filename = "obspred_ALL.png",plot = pALL,device = "png",path = paste0(code_dir,"GitLab/phd_code/R_main/temp/"),width=5*3,height=5*3)
+
+```
+
+
+# BDF obspred TC
+```{r}
+
+### TC ###
+{
+linreg=lm(data=BDF_Zeitreihe_pred_snv,formula=`cubist_spc_sg_snv_rs4-log1p-TC`~TC)
+linreg_summary=summary(linreg)
+(BDF_Zeitreihe_pred_snv%>%ggplot(aes(x=TC,
+                                    y=`cubist_spc_sg_snv_rs4-log1p-TC`))+
+ geom_abline(slope=1,linetype="dotted",linewidth=.75)+  
+        geom_abline(slope=linreg$coefficients[[2]],
+        intercept=linreg$coefficients[[1]],col="red")+
+        geom_point(aes(fill=Projekt,text=HORIZONT),shape=21,alpha=.5)+ 
+        #geom_hex(binwidth=.1)+
+  
+ # scale_fill_viridis_c(breaks=c(1,2,5,10,20),trans = scales::pseudo_log_trans(sigma = 0.001))+
+
+   annotate(geom="label",
+            x=0,y=6.5,
+            label=paste0("y = ",
+                         format(linreg$coefficients[[1]],digits=3),
+                         " + ",
+                         format(linreg$coefficients[[2]],digits=3),
+                         " * x\nr2=",
+                         format(linreg_summary$r.squared,digits=2),
+                          "\nRMSE=",
+                         zeitreihe_pred_eval_snv%>%
+                           filter(str_ends(Model,"TC"))%>%
+                           pull(rmse)%>%
+                        format(digits=3,nsmall=1),
+                         ", R2=",zeitreihe_pred_eval_snv%>%
+                           filter(str_ends(Model,"TC"))%>%
+                           pull(R2)%>%
+                           format(digits=2,nsmall=2)),
+            hjust=0)+
+  theme_pubr()+
+  xlab("TC Gemessen [M-%]")+
+  ylab("TC Vorhersage [M-%]")+
+  theme(legend.position = "inside",legend.position.inside = c(.9,.2))+
+  xlim(c(-.1,
+       max(
+        BDF_Zeitreihe_pred_snv$TC,
+        BDF_Zeitreihe_pred_snv$`cubist_spc_sg_snv_rs4-log1p-TC`,
+        na.rm = T
+        )+.1
+       )
+     )+
+  ylim(c(-.1,
+       max(
+        BDF_Zeitreihe_pred_snv$TC,
+        BDF_Zeitreihe_pred_snv$`cubist_spc_sg_snv_rs4-log1p-TC`,
+        na.rm = T
+        )+.1
+       )
+    )+ggtitle("TC"))%>%ggplotly
+}
+
+```
+
+
+# BDF obspred TOC
+```{r}
+
+### TOC ###
+{
+linreg=lm(data=BDF_Zeitreihe_pred_snv,formula=`cubist_spc_sg_snv_rs4-log1p-TOC`~TOC)
+linreg_summary=summary(linreg)
+(BDF_Zeitreihe_pred_snv%>%ggplot(aes(x=TOC,
+                                    y=`cubist_spc_sg_snv_rs4-log1p-TOC`))+
+geom_abline(slope=1,linetype="dotted",linewidth=.75)+  
+        geom_abline(slope=linreg$coefficients[[2]],
+        intercept=linreg$coefficients[[1]],col="red")+
+        geom_point(aes(fill=Projekt,text=HORIZONT),shape=21,alpha=.5)+ 
+        #geom_hex(binwidth=.1)+
+  
+  #scale_fill_viridis_c(breaks=c(1,2,5,10,20),trans = scales::pseudo_log_trans(sigma = 0.001))+
+
+   annotate(geom="label",
+            x=0,y=5.5,
+            label=paste0("y = ",
+                         format(linreg$coefficients[[1]],digits=3),
+                         " + ",
+                         format(linreg$coefficients[[2]],digits=3),
+                          " * x\nr2=",
+                         format(linreg_summary$r.squared,digits=2),
+                          "\nRMSE=",
+                         zeitreihe_pred_eval_snv%>%
+                           filter(str_ends(Model,"TOC"))%>%
+                           pull(rmse)%>%
+                        format(digits=3,nsmall=1),
+                         ", R2=",zeitreihe_pred_eval_snv%>%
+                           filter(str_ends(Model,"TOC"))%>%
+                           pull(R2)%>%
+                           format(digits=2,nsmall=2)),
+            hjust=0)+
+  theme_pubr()+
+  xlab("TOC Gemessen [M-%]")+
+  ylab("TOC Vorhersage [M-%]")+
+  theme(legend.position = "inside",legend.position.inside = c(.9,.2))+
+  xlim(c(-.1,
+       max(
+        BDF_Zeitreihe_pred_snv$TOC,
+        BDF_Zeitreihe_pred_snv$`cubist_spc_sg_snv_rs4-log1p-TOC`,
+        na.rm = T
+        )+.1
+       )
+     )+
+  ylim(c(-.1,
+       max(
+        BDF_Zeitreihe_pred_snv$TOC,
+        BDF_Zeitreihe_pred_snv$`cubist_spc_sg_snv_rs4-log1p-TOC`,
+        na.rm = T
+        )+.1
+       )
+    )+
+  ggtitle("TOC"))%>%ggplotly
+}
+
+
+```
+
+# BDF obspred Ct
+```{r}
+
+### Ct ###
+{
+linreg=lm(data=BDF_Zeitreihe_pred_snv,formula=`cubist_spc_sg_snv_rs4-log1p-Ct`~Ct)
+linreg_summary=summary(linreg)
+(BDF_Zeitreihe_pred_snv%>%ggplot(aes(x=Ct,
+                                    y=`cubist_spc_sg_snv_rs4-log1p-Ct`))+
+  geom_abline(slope=1,linetype="dotted",linewidth=.75)+  
+        geom_abline(slope=linreg$coefficients[[2]],
+        intercept=linreg$coefficients[[1]],col="red")+
+        geom_point(aes(fill=Projekt,text=HORIZONT),shape=21,alpha=.5)+ 
+        #geom_hex(binwidth=.1)+
+  
+ # scale_fill_viridis_c(breaks=c(1,2,5,10,20),trans = scales::pseudo_log_trans(sigma = 0.001))+
+
+   annotate(geom="label",
+            x=0,y=7,
+            label=paste0("y = ",
+                         format(linreg$coefficients[[1]],digits=3),
+                         " + ",
+                         format(linreg$coefficients[[2]],digits=3),
+                          " * x\nr2=",
+                         format(linreg_summary$r.squared,digits=2),
+                          "\nRMSE=",
+                         zeitreihe_pred_eval_snv%>%
+                           filter(str_ends(Model,"Ct"))%>%
+                           pull(rmse)%>%
+                        format(digits=3,nsmall=1),
+                         ", R2=",zeitreihe_pred_eval_snv%>%
+                           filter(str_ends(Model,"Ct"))%>%
+                           pull(R2)%>%
+                           format(digits=2,nsmall=2)),
+            hjust=0)+
+  theme_pubr()+
+  xlab("Ct Gemessen [M-%]")+
+  ylab("Ct Vorhersage [M-%]")+
+  theme(legend.position = "inside",legend.position.inside = c(.9,.2))+
+  xlim(c(-.1,
+       max(
+        BDF_Zeitreihe_pred_snv$Ct,
+        BDF_Zeitreihe_pred_snv$`cubist_spc_sg_snv_rs4-log1p-Ct`,
+        na.rm = T
+        )+.1
+       )
+     )+
+  ylim(c(-.1,
+       max(
+        BDF_Zeitreihe_pred_snv$Ct,
+        BDF_Zeitreihe_pred_snv$`cubist_spc_sg_snv_rs4-log1p-Ct`,
+        na.rm = T
+        )+.1
+       )
+    )+
+  ggtitle("Ct"))%>%ggplotly
+}
+
+
+```
+
+# BDF obspred Corg
+```{r}
+
+### corg ###
+{
+linreg=lm(data=BDF_Zeitreihe_pred_snv,formula=`cubist_spc_sg_snv_rs4-log1p-CORG`~CORG)
+linreg_summary=summary(linreg)
+(BDF_Zeitreihe_pred_snv%>%ggplot(aes(x=CORG,
+                                    y=`cubist_spc_sg_snv_rs4-log1p-CORG`))+
+  geom_abline(slope=1,linetype="dotted",linewidth=.75)+  
+        geom_abline(slope=linreg$coefficients[[2]],
+        intercept=linreg$coefficients[[1]],col="red")+
+        geom_point(aes(fill=Projekt,text=HORIZONT),shape=21,alpha=.5)+ 
+        #geom_hex(binwidth=.1)+
+  
+  #scale_fill_viridis_c(breaks=c(1,2,5,10,20),trans = scales::pseudo_log_trans(sigma = 0.001))+
+
+   annotate(geom="label",
+            x=0,y=6.,
+            label=paste0("y = ",
+                         format(linreg$coefficients[[1]],digits=3),
+                         " + ",
+                         format(linreg$coefficients[[2]],digits=3),
+                         " * x\nr2=",
+                         format(linreg_summary$r.squared,digits=2),
+                         "\nRMSE=",
+                         zeitreihe_pred_eval_snv%>%
+                           filter(str_ends(Model,"CORG"))%>%
+                           pull(rmse)%>%
+                        format(digits=3,nsmall=1),
+                         ", R2=",zeitreihe_pred_eval_snv%>%
+                           filter(str_ends(Model,"CORG"))%>%
+                           pull(R2)%>%
+                           format(digits=2,nsmall=2)),
+            hjust=0)+
+  theme_pubr()+
+  xlab("CORG Gemessen [M-%]")+
+  ylab("CORG Vorhersage [M-%]")+
+  theme(legend.position = "inside",legend.position.inside = c(.9,.2))+
+  xlim(c(-.1,
+       max(
+        BDF_Zeitreihe_pred_snv$CORG,
+        BDF_Zeitreihe_pred_snv$`cubist_spc_sg_snv_rs4-log1p-CORG`,
+        na.rm = T
+        )+.1
+       )
+     )+
+  ylim(c(-.1,
+       max(
+        BDF_Zeitreihe_pred_snv$CORG,
+        BDF_Zeitreihe_pred_snv$`cubist_spc_sg_snv_rs4-log1p-CORG`,
+        na.rm = T
+        )+.1
+       )
+    )+ggtitle("CORG"))%>%ggplotly
+}
+
+
+```
+
+# BDF obspred TOC400
+```{r}
+
+### TOC400 ###
+{
+linreg=lm(data=BDF_Zeitreihe_pred_snv,formula=`cubist_spc_sg_snv_rs4-log1p-TOC400`~TOC400)
+linreg_summary=summary(linreg)
+(BDF_Zeitreihe_pred_snv%>%ggplot(aes(x=TOC400,
+                                    y=`cubist_spc_sg_snv_rs4-log1p-TOC400`))+
+  geom_abline(slope=1,linetype="dotted",linewidth=.75)+  
+        geom_abline(slope=linreg$coefficients[[2]],
+        intercept=linreg$coefficients[[1]],col="red")+
+        geom_point(aes(fill=Projekt,text=HORIZONT),shape=21,alpha=.5)+ 
+        #geom_hex(binwidth=.1)+
+  
+ # scale_fill_viridis_c(breaks=c(1,2,5,10,20),trans = scales::pseudo_log_trans(sigma = 0.001))+
+
+   annotate(geom="label",
+            x=0,y=5,
+            label=paste0("y = ",
+                         format(linreg$coefficients[[1]],digits=3),
+                         " + ",
+                         format(linreg$coefficients[[2]],digits=3),
+                         " * x\nr2=",
+                         format(linreg_summary$r.squared,digits=2),
+                         "\nRMSE=",
+                         zeitreihe_pred_eval_snv%>%
+                           filter(str_ends(Model,"TOC400"))%>%
+                           pull(rmse)%>%
+                        format(digits=3,nsmall=1),
+                         ", R2=",zeitreihe_pred_eval_snv%>%
+                           filter(str_ends(Model,"TOC400"))%>%
+                           pull(R2)%>%
+                           format(digits=2,nsmall=2)),
+            hjust=0)+
+  theme_pubr()+
+  xlab("TOC400 Gemessen [M-%]")+
+  ylab("TOC400 Vorhersage [M-%]")+
+  theme(legend.position = "inside",legend.position.inside = c(.9,.2))+
+  xlim(c(-.1,
+       max(
+        BDF_Zeitreihe_pred_snv$TOC400,
+        BDF_Zeitreihe_pred_snv$`cubist_spc_sg_snv_rs4-log1p-TOC400`,
+        na.rm = T
+        )+.1
+       )
+     )+
+  ylim(c(-.1,
+       max(
+        BDF_Zeitreihe_pred_snv$TOC400,
+        BDF_Zeitreihe_pred_snv$`cubist_spc_sg_snv_rs4-log1p-TOC400`,
+        na.rm = T
+        )+.1
+       )
+    )+
+  ggtitle("TOC400"))%>%ggplotly
+}
+
+
+```
+
+
+
+# BDF obspred ROC
+```{r}
+
+### ROC ###
+{
+linreg=lm(data=BDF_Zeitreihe_pred_snv,formula=`cubist_spc_sg_snv_rs4-log1p-ROC`~ROC)
+linreg_summary=summary(linreg)
+(BDF_Zeitreihe_pred_snv%>%ggplot(aes(x=ROC,
+                                    y=`cubist_spc_sg_snv_rs4-log1p-ROC`))+
+geom_abline(slope=1,linetype="dotted",linewidth=.75)+  
+        geom_abline(slope=linreg$coefficients[[2]],
+        intercept=linreg$coefficients[[1]],col="red")+
+        geom_point(aes(fill=Projekt,text=HORIZONT),shape=21,alpha=.5)+ 
+        #geom_hex(binwidth=.1)+
+  
+  #scale_fill_viridis_c(breaks=c(1,2,5,10,20),trans = scales::pseudo_log_trans(sigma = 0.001))+
+
+   annotate(geom="label",
+            x=0,y=.7,
+            label=paste0("y = ",
+                         format(linreg$coefficients[[1]],digits=3),
+                         " + ",
+                         format(linreg$coefficients[[2]],digits=3),
+                         " * x\nr2=",
+                         format(linreg_summary$r.squared,digits=2),
+                         "\nRMSE=",
+                         zeitreihe_pred_eval_snv%>%
+                           filter(str_ends(Model,"ROC"))%>%
+                           pull(rmse)%>%
+                        format(digits=3,nsmall=1),
+                         ", R2=",zeitreihe_pred_eval_snv%>%
+                           filter(str_ends(Model,"ROC"))%>%
+                           pull(R2)%>%
+                           format(digits=2,nsmall=2)),
+            hjust=0)+
+  theme_pubr()+
+  xlab("ROC Gemessen [M-%]")+
+  ylab("ROC Vorhersage [M-%]")+
+  theme(legend.position = "inside",legend.position.inside = c(.9,.2))+
+  xlim(c(-.1/6*.8,
+       max(
+        BDF_Zeitreihe_pred_snv$ROC,
+        BDF_Zeitreihe_pred_snv$`cubist_spc_sg_snv_rs4-log1p-ROC`,
+        na.rm = T
+        )+.1/6*.8
+       )
+     )+
+  ylim(c(-.1/6*.8,
+       max(
+        BDF_Zeitreihe_pred_snv$ROC,
+        BDF_Zeitreihe_pred_snv$`cubist_spc_sg_snv_rs4-log1p-ROC`,
+        na.rm = T
+        )+.1/6*.8
+       )
+    )+
+  ggtitle("ROC"))%>%ggplotly
+}
+
+
+```
+
+
+
+
+# BDF obspred TIC900
+```{r}
+
+### TIC900 ###
+{
+linreg=lm(data=BDF_Zeitreihe_pred_snv,formula=`cubist_spc_sg_snv_rs4-log1p-TIC900`~TIC900)
+linreg_summary=summary(linreg)
+(BDF_Zeitreihe_pred_snv%>%ggplot(aes(x=TIC900,
+                                    y=`cubist_spc_sg_snv_rs4-log1p-TIC900`))+
+geom_abline(slope=1,linetype="dotted",linewidth=.75)+  
+        geom_abline(slope=linreg$coefficients[[2]],
+        intercept=linreg$coefficients[[1]],col="red")+
+        geom_point(aes(fill=Projekt,text=HORIZONT),shape=21,alpha=.5)+ 
+        #geom_hex(binwidth=.1)+
+  
+ # scale_fill_viridis_c(breaks=c(1,2,5,10,20,50,100),trans = scales::pseudo_log_trans(sigma = 0.001))+
+
+   annotate(geom="label",
+            x=0,y=0.4,
+            label=paste0("y = ",
+                         format(linreg$coefficients[[1]],digits=3),
+                         " + ",
+                         format(linreg$coefficients[[2]],digits=3),
+                         " * x\nr2=",
+                         format(linreg_summary$r.squared,digits=2),
+                         "\nRMSE=",
+                         zeitreihe_pred_eval_snv%>%
+                           filter(str_ends(Model,"TIC900"))%>%
+                           pull(rmse)%>%
+                        format(digits=3,nsmall=1),
+                         ", R2=",zeitreihe_pred_eval_snv%>%
+                           filter(str_ends(Model,"TIC900"))%>%
+                           pull(R2)%>%
+                           format(digits=2,nsmall=2)),
+            hjust=0)+
+  theme_pubr()+
+  xlab("TIC900 Gemessen [M-%]")+
+  ylab("TIC900 Vorhersage [M-%]")+
+  theme(legend.position = "inside",legend.position.inside = c(.9,.2))+
+  xlim(c(-.1/6*.4,
+       max(
+        BDF_Zeitreihe_pred_snv$TIC900,
+        BDF_Zeitreihe_pred_snv$`cubist_spc_sg_snv_rs4-log1p-TIC900`,
+        na.rm = T
+        )+.1/6*.4
+       )
+     )+
+  ylim(c(-.1/6*.4,
+       max(
+        BDF_Zeitreihe_pred_snv$TIC900,
+        BDF_Zeitreihe_pred_snv$`cubist_spc_sg_snv_rs4-log1p-TIC900`,
+        na.rm = T
+        )+.1/6*.4
+       )
+    )+
+  ggtitle("TIC900"))%>%ggplotly
+}
+
+
+```
+
+
+# BDF obspred TIC900 SG1D
+```{r}
+
+### TIC900 ###
+{
+linreg=lm(data=BDF_Zeitreihe_pred_sg1d,formula=`cubist_spc_sg1d_rs4-log1p-TIC900`~TIC900)
+linreg_summary=summary(linreg)
+(BDF_Zeitreihe_pred_sg1d%>%ggplot(aes(x=TIC900,
+                                    y=`cubist_spc_sg1d_rs4-log1p-TIC900`))+
+geom_abline(slope=1,linetype="dotted",linewidth=.75)+  
+        geom_abline(slope=linreg$coefficients[[2]],
+        intercept=linreg$coefficients[[1]],col="red")+
+        geom_point(aes(fill=Projekt,text=HORIZONT),shape=21,alpha=.5)+ 
+        #geom_hex(binwidth=.1)+
+  
+ # scale_fill_viridis_c(breaks=c(1,2,5,10,20,50,100),trans = scales::pseudo_log_trans(sigma = 0.001))+
+
+   annotate(geom="label",
+            x=0,y=0.4,
+            label=paste0("y = ",
+                         format(linreg$coefficients[[1]],digits=3),
+                         " + ",
+                         format(linreg$coefficients[[2]],digits=3),
+                         " * x\nr2=",
+                         format(linreg_summary$r.squared,digits=2),
+                         "\nRMSE=",
+                         zeitreihe_pred_eval_sg1d%>%
+                           filter(str_ends(Model,"TIC900"))%>%
+                           pull(rmse)%>%
+                        format(digits=3,nsmall=1),
+                         ", R2=",zeitreihe_pred_eval_sg1d%>%
+                           filter(str_ends(Model,"TIC900"))%>%
+                           pull(R2)%>%
+                           format(digits=2,nsmall=2)),
+            hjust=0)+
+  theme_pubr()+
+  xlab("TIC900 Gemessen [M-%]")+
+  ylab("TIC900 Vorhersage [M-%]")+
+  theme(legend.position = "inside",legend.position.inside = c(.9,.2))+
+  xlim(c(-.1/6*.4,
+       max(
+        BDF_Zeitreihe_pred_sg1d$TIC900,
+        BDF_Zeitreihe_pred_sg1d$`cubist_spc_sg1d_rs4-log1p-TIC900`,
+        na.rm = T
+        )+.1/6*.4
+       )
+     )+
+  ylim(c(-.1/6*.4,
+       max(
+        BDF_Zeitreihe_pred_sg1d$TIC900,
+        BDF_Zeitreihe_pred_sg1d$`cubist_spc_sg_sg1d_rs4-log1p-TIC900`,
+        na.rm = T
+        )+.1/6*.4
+       )
+    )+
+  ggtitle("TIC900 sg1d"))%>%ggplotly
+}
+
+
+```
+
+###### ensemble models kmeans test (not in report)
+
+```{r}
+#### TEST ENSEMBLE OF 5 folds ####
+# TOC
+for (i in c(1:5)){
+  x=paste0("TOC_pred_f",i)
+ 
+  res=predict_variable(
+    target_data = BDF_Zeitreihe%>%
+      filter(!is.na(spc[,1])), # only with spc avail
+      model_folder=paste0(data_dir,"/R_main/models/2024 models kmeans/k_means_splits/Cubist_models_C_kmeans",i,"/"),
+        eval_model_folder=model_folder, # mbl needs different dir
+        prefix="cubist_",
+        variable_="TOC",
+        metric="test.rmse",
+        maximise=F,
+        restrict=T,
+        diss_limit=2.5,
+        manual="cubist_spc_sg1d_rs4-log1p-TOC"
+    )
+   assign(x,res) # store individually
+   
+   # aggregating pred
+   if(i==1){
+     TOC_pred_ens=TOC_pred_f1$predictions%>%rename("pred1"=pred)
+   }else{
+     TOC_pred_ens[paste0("pred",i)]=res$predictions$pred
+   }
+}
+# averaging pred
+TOC_ens=TOC_pred_ens%>%rowwise()%>%transmute(
+  sample_id,
+  avg_pred=mean(c(pred1,pred2,pred3,pred4,pred5)),
+  min_pred=min(c(pred1,pred2,pred3,pred4,pred5)),
+  max_pred=max(c(pred1,pred2,pred3,pred4,pred5))
+)
+
+
+
+# CORG
+
+for (i in c(1:5)){
+  x=paste0("CORG_pred_f",i)
+ 
+  res=predict_variable(
+    target_data = BDF_Zeitreihe%>%
+      filter(!is.na(spc[,1])), # only with spc avail
+      model_folder=paste0(data_dir,"/R_main/models/2024 models kmeans/k_means_splits/Cubist_models_C_kmeans",i,"/"),
+        eval_model_folder=model_folder, # mbl needs different dir
+        prefix="cubist_",
+        variable_="CORG",
+        metric="test.rmse",
+        maximise=F,
+        restrict=T,
+        diss_limit=2.5,
+        manual="cubist_spc_sg1d_rs4-log1p-CORG"
+    )
+   assign(x,res) # store individually
+   
+   # aggregating pred
+   if(i==1){
+     CORG_pred_ens=CORG_pred_f1$predictions%>%rename("pred1"=pred)
+   }else{
+     CORG_pred_ens[paste0("pred",i)]=res$predictions$pred
+   }
+}
+# averaging pred
+CORG_ens=CORG_pred_ens%>%rowwise()%>%transmute(
+  sample_id,
+  avg_pred=mean(c(pred1,pred2,pred3,pred4,pred5)),
+  min_pred=min(c(pred1,pred2,pred3,pred4,pred5)),
+  max_pred=max(c(pred1,pred2,pred3,pred4,pred5))
+)
+
+
+
+
+ggplot(BDF_Zeitreihe,aes(x=BDF_database$CORG,y=soliTOC$TOC))+
+  geom_point()+
+  
+  
+  geom_point(data=left_join(
+    TOC_ens,
+    BDF_Zeitreihe$BDF_database,
+    by=c("sample_id"="Lab_ID")),
+    aes(x=CORG,y=avg_pred),col="red")+
+  
+  
+  geom_errorbar(data=left_join(
+    TOC_ens,
+    BDF_Zeitreihe$BDF_database,
+    by=c("sample_id"="Lab_ID")),
+    aes(x=CORG,
+        ymin=min_pred,
+        y=avg_pred,
+        ymax=max_pred),
+        col="red"
+  )+
+
+
+
+  geom_point(data=left_join(
+    CORG_ens,
+    BDF_Zeitreihe$BDF_database,
+    by=c("sample_id"="Lab_ID")),
+    aes(x=CORG,y=avg_pred),col="blue")+
+  
+  
+  geom_errorbar(data=left_join(
+    CORG_ens,
+    BDF_Zeitreihe$BDF_database,
+    by=c("sample_id"="Lab_ID")),
+    aes(x=CORG,
+        ymin=min_pred,
+        y=avg_pred,
+        ymax=max_pred),
+        col="blue"
+  )
+
+
+```
+
+
+# ##############################################
+#### #### Zeitreihe EDA ####
+
+
+```{r include=FALSE}
+
+plot_BDF=function(dataset,col_var="Projekt"){
+require(sp)
+require(sf)
+mapdata=filter(dataset,!is.na(Hochwert))
+cat("removed",nrow(dataset)-nrow(mapdata),"NA")
+# pull coords
+coords <- data.frame(x=mapdata$Rechtswert,y=mapdata$Hochwert)
+coordinates(coords)<-~x+y
+
+# assigning current crs
+proj4string(coords)<-CRS("+init=epsg:25833") #deprecated soon
+
+# converting to target crs
+coord_new<-spTransform(coords,CRS("+init=epsg:4326"))
+mapdata$x<-coordinates(coord_new)[,1]
+mapdata$y<-coordinates(coord_new)[,2]
+mapdata%>%
+ plot_ly(text=~Projekt, lon = ~x, lat = ~y, 
+          type = 'scattermapbox',size=2,color = ~.data[[col_var]])%>%
+  #defining starting point (centered on Saxony)
+  layout(mapbox = list(style = 'open-street-map',
+         zoom =7,
+         center=list(lon=.1+mean(mapdata$x),
+                     lat=-.2+mean(mapdata$y))))->plt
+
+return(plt)
+}
+```
+
+# Plot all entries BDF complete
+```{r message=FALSE, warning=FALSE}
+
+
+
+p_all=c()
+# Note: Some BDF have different numbers but are the same. Not checked here
+for (i in(unique(BDF_complete$Projekt))){
+  print(i)
+  #Bodentyp z.T. unterschiedlich klassifiziert
+  d=(BDF_complete_prep%>%
+             filter(Projekt==i & !is.na(PDATUM))) # rm BfUL NAs, cleaner
+    p_all[[i]]=ggplot(d,
+           aes(ymin=oTief,
+               y=mTief,
+               ymax=uTief,
+               x=as.Date(PDATUM),
+               fill=HORIZONT,
+               col=HORIZONT))+
+      
+       geom_ribbon(data=d%>%group_by(HORIZONT,PDATUM)%>%summarise(uTief=max(uTief),oTief=min(oTief),mTief=mean(c(uTief,oTief))),alpha=.2)+
+      
+     geom_errorbar(aes(group=ProbenID,linetype=EntnahmeArt),alpha=.5,orientation = "x",
+                   width=as.numeric(abs(min(as.Date(d$PDATUM),
+                                            na.rm = T)-max(as.Date(d$PDATUM),
+                                                           na.rm = T)))/50)+ # make end-notches 1/50 of timespan / x axis ()
+     geom_point(aes(text=EntnahmeArt,shape=EntnahmeArt))+
+      scale_x_date()+
+      scale_shape_manual(breaks=c("FA", "LA", "VZ", "FO", "LO"),values=c(0:4))+
+    #coord_flip()+
+     scale_y_reverse()+
+      ylab("Tiefe [m]")+
+    xlab(i) # ggtitle is not shown in ggplotly
+   # p[[i]]
+   
+  }
+
+
+
+p_all_FA=c()
+# Note: Some BDF have different numbers but are the same. Not checked here
+for (i in(unique(BDF_complete$Projekt))){
+  print(i)
+  #Bodentyp z.T. unterschiedlich klassifiziert
+  d=(BDF_complete_prep%>%filter(EntnahmeArt=="FA")%>%
+             filter(Projekt==i & !is.na(PDATUM))) # rm BfUL NAs, cleaner
+    p_all_FA[[i]]=ggplot(d,
+           aes(ymin=oTief,
+               y=mTief,
+               ymax=uTief,
+               x=as.Date(PDATUM),
+               fill=HORIZONT,
+               col=HORIZONT))+
+      
+       geom_ribbon(data=d%>%group_by(HORIZONT,PDATUM)%>%summarise(uTief=max(uTief),oTief=min(oTief),mTief=mean(c(uTief,oTief))),alpha=.2)+
+      
+     geom_errorbar(aes(group=ProbenID),alpha=.5,orientation = "x",
+                   width=as.numeric(abs(min(as.Date(d$PDATUM),
+                                            na.rm = T)-max(as.Date(d$PDATUM),
+                                                           na.rm = T)))/50)+ # make end-notches 1/50 of timespan / x axis ()
+     geom_point(aes(text=EntnahmeArt))+
+      scale_x_date()+
+      
+    #coord_flip()+
+     scale_y_reverse()+
+      ylab("Tiefe [m]")+
+    xlab(i) # ggtitle is not shown in ggplotly
+   # p[[i]]
+   
+}
+
+
+
+
+p_all_LA=c()
+# Note: Some BDF have different numbers but are the same. Not checked here
+for (i in(unique(BDF_complete$Projekt))){
+  print(i)
+  #Bodentyp z.T. unterschiedlich klassifiziert
+  d=(BDF_complete_prep%>%filter(EntnahmeArt=="LA")%>%
+             filter(Projekt==i & !is.na(PDATUM))) # rm BfUL NAs, cleaner
+    p_all_LA[[i]]=ggplot(d,
+           aes(ymin=oTief,
+               y=mTief,
+               ymax=uTief,
+               x=as.Date(PDATUM),
+               fill=HORIZONT,
+               col=HORIZONT))+
+      
+     geom_ribbon(data=d%>%group_by(HORIZONT,PDATUM)%>%summarise(uTief=max(uTief),oTief=min(oTief),mTief=mean(c(uTief,oTief))),alpha=.2)+
+      
+     geom_errorbar(aes(group=ProbenID),alpha=.5,orientation = "x",
+                   width=as.numeric(abs(min(as.Date(d$PDATUM),
+                                            na.rm = T)-max(as.Date(d$PDATUM),
+                                                           na.rm = T)))/50)+ # make end-notches 1/50 of timespan / x axis ()
+     geom_point(aes(text=EntnahmeArt))+
+      scale_x_date()+
+      
+    #coord_flip()+
+     scale_y_reverse()+
+      ylab("Tiefe [m]")+
+    xlab(i) # ggtitle is not shown in ggplotly
+   # p[[i]]
+   
+  }
+
+```
+
+# plots complete all sel BDF
+```{r}
+  ggplotly(p_all[["BDF02"]])
+  ggplotly(p_all[["BDF12"]])
+  ggplotly(p_all[["BDF13"]])
+  ggplotly(p_all[["BDF22"]])
+  ggplotly(p_all[["BDF23"]])
+  ggplotly(p_all[["BDF24"]])
+  ggplotly(p_all[["BDF30"]])
+  ggplotly(p_all[["BDF33"]])
+  ggplotly(p_all[["BDF35"]])
+  ggplotly(p_all[["BDF42"]])
+  ggplotly(p_all[["BDF43"]])
+  ggplotly(p_all[["BDF46"]])
+
+
+
+```
+
+# plots complete FA sel BDF
+```{r}
+  ggplotly(p_all_FA[["BDF02"]])
+  ggplotly(p_all_FA[["BDF12"]])
+  ggplotly(p_all_FA[["BDF13"]])
+  ggplotly(p_all_FA[["BDF22"]])
+  ggplotly(p_all_FA[["BDF23"]])
+  ggplotly(p_all_FA[["BDF24"]])
+  ggplotly(p_all_FA[["BDF30"]])
+  ggplotly(p_all_FA[["BDF33"]])
+  ggplotly(p_all_FA[["BDF35"]])
+  ggplotly(p_all_FA[["BDF42"]])
+  ggplotly(p_all_FA[["BDF43"]])
+  ggplotly(p_all_FA[["BDF46"]])
+
+
+
+```
+
+# plots complete LA sel BDF
+```{r}
+  ggplotly(p_all_LA[["BDF02"]])
+  ggplotly(p_all_LA[["BDF12"]])
+  ggplotly(p_all_LA[["BDF13"]])
+  ggplotly(p_all_LA[["BDF22"]])
+  ggplotly(p_all_LA[["BDF23"]])
+  ggplotly(p_all_LA[["BDF24"]])
+  ggplotly(p_all_LA[["BDF30"]])
+  ggplotly(p_all_LA[["BDF33"]])
+  ggplotly(p_all_LA[["BDF35"]])
+  ggplotly(p_all_LA[["BDF42"]])
+  ggplotly(p_all_LA[["BDF43"]])
+  ggplotly(p_all_LA[["BDF46"]])
+
+
+
+```
+
+
+# plots complete FA/LA facets
+```{r}
+
+p_all_FALA=c()
+# Note: Some BDF have different numbers but are the same. Not checked here
+for (i in(unique(BDF_complete$Projekt))){
+  print(i)
+  #Bodentyp z.T. unterschiedlich klassifiziert
+  d=(BDF_complete_prep%>%filter(EntnahmeArt%in%c("FA","LA"))%>%
+             filter(Projekt==i & !is.na(PDATUM))) # rm BfUL NAs, cleaner
+    p_all_FALA[[i]]=ggplot(d,
+           aes(ymin=oTief,
+               y=mTief,
+               ymax=uTief,
+               x=as.Date(PDATUM),
+               fill=HORIZONT,
+               col=HORIZONT))+
+      
+       geom_ribbon(data=d%>%group_by(HORIZONT,PDATUM,EntnahmeArt)%>%summarise(uTief=max(uTief),oTief=min(oTief),mTief=mean(c(uTief,oTief))),alpha=.2)+
+      
+     geom_errorbar(aes(group=ProbenID),alpha=.5,orientation = "x",
+                   width=as.numeric(abs(min(as.Date(d$PDATUM),
+                                            na.rm = T)-max(as.Date(d$PDATUM),
+                                                           na.rm = T)))/50)+ # make end-notches 1/50 of timespan / x axis ()
+     geom_point(aes(text=EntnahmeArt))+
+      scale_x_date()+
+      
+    #coord_flip()+
+     scale_y_reverse()+
+    xlab(i)+
+      ylab("Tiefe [m]")+
+      facet_wrap(~EntnahmeArt,ncol=2)+
+      scale_color_manual(
+        breaks=BDF_complete_prep%>%filter(Projekt==i)%>%
+                           pull(HORIZONT)%>%unique,
+        values=gg_color_hue(BDF_complete_prep%>%filter(Projekt==i)%>%
+                              pull(HORIZONT)%>%unique%>%length))+
+      scale_fill_manual(
+        breaks=BDF_complete_prep%>%filter(Projekt==i)%>%
+                          pull(HORIZONT)%>%unique,
+        values=gg_color_hue(BDF_complete_prep%>%filter(Projekt==i)%>%
+                              pull(HORIZONT)%>%unique%>%length))+
+      theme_pubr()
+      # ggtitle is not shown in ggplotly
+   # p[[i]]
+   
+}
+for (i in BDF_list){
+ggsave(filename = paste0(code_dir,"GitLab/phd_code/R_main/temp/all_fala_",i,".png"),device = "png",plot = p_all_FALA[[i]],width=10,height=6)
+}
+  ggplotly(p_all_FALA[["BDF02"]])
+  ggplotly(p_all_FALA[["BDF12"]])
+  ggplotly(p_all_FALA[["BDF13"]])
+  ggplotly(p_all_FALA[["BDF22"]])
+  ggplotly(p_all_FALA[["BDF23"]])
+  ggplotly(p_all_FALA[["BDF24"]])
+  ggplotly(p_all_FALA[["BDF30"]])
+  ggplotly(p_all_FALA[["BDF33"]])
+  ggplotly(p_all_FALA[["BDF35"]])
+  ggplotly(p_all_FALA[["BDF42"]])
+  ggplotly(p_all_FALA[["BDF43"]])
+  ggplotly(p_all_FALA[["BDF46"]])
+  
+```
+
+
+# plots complete FA/LA/VZ facets
+```{r}
+
+p_all_FALAVZ=c()
+# Note: Some BDF have different numbers but are the same. Not checked here
+for (i in(unique(BDF_complete$Projekt))){
+  print(i)
+  #Bodentyp z.T. unterschiedlich klassifiziert
+  d=(BDF_complete_prep%>%filter(EntnahmeArt%in%c("FA","LA","VZ"))%>%
+             filter(Projekt==i & !is.na(PDATUM))) # rm BfUL NAs, cleaner
+    p_all_FALAVZ[[i]]=ggplot(d,
+           aes(ymin=oTief,
+               y=mTief,
+               ymax=uTief,
+               x=as.Date(PDATUM),
+               fill=HORIZONT,
+               col=HORIZONT))+
+      
+       geom_ribbon(data=d%>%group_by(HORIZONT,PDATUM,EntnahmeArt)%>%summarise(uTief=max(uTief),oTief=min(oTief),mTief=mean(c(uTief,oTief))),alpha=.2)+
+      
+     geom_errorbar(aes(group=ProbenID),alpha=.5,orientation = "x",
+                   width=as.numeric(abs(min(as.Date(d$PDATUM),
+                                            na.rm = T)-max(as.Date(d$PDATUM),
+                                                           na.rm = T)))/50)+ # make end-notches 1/50 of timespan / x axis ()
+     geom_point(aes(text=EntnahmeArt))+
+      scale_x_date()+
+      
+    #coord_flip()+
+     scale_y_reverse()+
+    xlab(i)+
+      ylab("Tiefe [m]")+
+      facet_wrap(~EntnahmeArt,ncol=3)+
+      theme_pubr()# ggtitle is not shown in ggplotly
+   # p[[i]]
+   
+}
+for (i in BDF_list){
+ggsave(filename = paste0(code_dir,"GitLab/phd_code/R_main/temp/all_falavz_",i,".png"),device = "png",plot = p_all_FALAVZ[[i]],width=10,height=6)
+}
+  ggplotly(p_all_FALAVZ[["BDF02"]])
+  ggplotly(p_all_FALAVZ[["BDF12"]])
+  ggplotly(p_all_FALAVZ[["BDF13"]])
+  ggplotly(p_all_FALAVZ[["BDF22"]])
+  ggplotly(p_all_FALAVZ[["BDF23"]])
+  ggplotly(p_all_FALAVZ[["BDF24"]])
+  ggplotly(p_all_FALAVZ[["BDF30"]])
+  ggplotly(p_all_FALAVZ[["BDF33"]])
+  ggplotly(p_all_FALAVZ[["BDF35"]])
+  ggplotly(p_all_FALAVZ[["BDF42"]])
+  ggplotly(p_all_FALAVZ[["BDF43"]])
+  ggplotly(p_all_FALAVZ[["BDF46"]])
+  
+```
+
+
+# Plot all samples. Aggregate.
+```{r}
+
+# NOTE: BfUL data still missing
+p=c()
+for (i in(paste0("BDF",c("02",12,13,22,23,24,30,33,35,42,43,46)))){
+  print(i)
+  #Bodentyp z.T. unterschiedlich klassifiziert
+  d=(all_prep%>%
+             filter(Projekt==i & !is.na(PDATUM))) # rm BfUL NAs, cleaner
+    p[[i]]=ggplot(d,
+           aes(ymin=oTief,
+               y=mTief,
+               ymax=uTief,
+               x=as.Date(PDATUM),
+               fill=HORIZONT,
+               col=HORIZONT))+
+      
+       geom_ribbon(data=d%>%group_by(HORIZONT,PDATUM,EntnahmeArt)%>%summarise(uTief=max(uTief),oTief=min(oTief),mTief=mean(c(uTief,oTief))),alpha=.2)+
+      
+     geom_errorbar(aes(group=Name),alpha=.5,orientation = "x",
+                   width=as.numeric(abs(min(as.Date(d$PDATUM),na.rm = T)-max(as.Date(d$PDATUM),na.rm = T)))/50)+ # make end-notches 1/50 of timespan / x axis ()
+     geom_point(aes(text=EntnahmeArt))+
+      scale_x_date()+
+      
+    #coord_flip()+
+     scale_y_reverse()+
+    xlab(i)+
+      facet_wrap(~EntnahmeArt,ncol=3)+
+      scale_color_manual(
+        breaks=BDF_complete_prep%>%filter(Projekt==i)%>%
+                           pull(HORIZONT)%>%unique,
+        values=gg_color_hue(BDF_complete_prep%>%filter(Projekt==i)%>%
+                              pull(HORIZONT)%>%unique%>%length))+
+      scale_fill_manual(
+        breaks=BDF_complete_prep%>%filter(Projekt==i)%>%
+                          pull(HORIZONT)%>%unique,
+        values=gg_color_hue(BDF_complete_prep%>%filter(Projekt==i)%>%
+                              pull(HORIZONT)%>%unique%>%length))+
+      ylab("Tiefe [m]")+
+      theme_pubr()# ggtitle is not shown in ggplotly # ggtitle is not shown in ggplotly
+   # p[[i]]
+   
+}
+
+
+
+for (i in BDF_list){
+ggsave(filename = paste0(code_dir,"GitLab/phd_code/R_main/temp/all_sel_fala_",i,".png"),device = "png",plot = p[[i]],width=10,height=6)
+}
+  ggplotly(p[["BDF02"]])
+  ggplotly(p[["BDF12"]])
+  ggplotly(p[["BDF13"]])
+  ggplotly(p[["BDF22"]])
+  ggplotly(p[["BDF23"]])
+  ggplotly(p[["BDF24"]])
+  ggplotly(p[["BDF30"]])
+  ggplotly(p[["BDF33"]])
+  ggplotly(p[["BDF35"]])
+  ggplotly(p[["BDF42"]])
+  ggplotly(p[["BDF43"]])
+  ggplotly(p[["BDF46"]])
+  
+```
+# grid all
+```{r}
+# plot / table data avail
+BDF_complete%>%filter(Projekt%in%paste0("BDF",c("02",12,13,22,23,24,30,33,35,42,43,46)))%>%#&!is.na(CORG))%>%
+  mutate(`obere Probentiefe`=if_else(VZ_POT=="+",-1*`obere Probentiefe`,`obere Probentiefe`),
+              `untere Probentiefe`=if_else(VZ_PUT=="+",-1*`untere Probentiefe`,`untere Probentiefe`))%>%
+                rename(oTief=`obere Probentiefe`,
+                       uTief=`untere Probentiefe`)%>%
+       mutate(mTief=(oTief+uTief)/2,HORIZONT=if_else(is.na(GEOL_SCHICHT),Horizont,paste0(GEOL_SCHICHT,Horizont)))->d
+
+
+
+
+{
+  p=ggplot(d%>%select(PDATUM,Projekt)%>%na.omit(),
+       aes(x=as.Date(PDATUM),y=Projekt))+
+  geom_bin2d(color="black",aes(group=paste(year(PDATUM))),binwidth=365,drop=T)+
+  scale_x_date(#limits = as.Date(c("1995-01-01","2023-06-01")),
+               date_breaks = "1 year",date_labels="%Y")+
+  scale_y_discrete(limits=rev)+
+  scale_fill_viridis_c()+
+  theme_pubr()+
+  theme(panel.grid.major = element_line(),
+        axis.text.x = element_text(angle=90,size=10,hjust=0,vjust=0.5),,
+        axis.title = element_blank(),
+        legend.justification.top = "right")+
+  ggtitle("Probennahmen in der BDF-Datenbank")
+
+plot(p)
+}
+
+
+png("C:/Users/adam/Documents/GitHub/R_main/R_main/temp/BDF_complete_sampling.png",height=500,width=1000)
+  plot(p)
+dev.off()
+```
+# grid selection
+```{r}
+# plot / table data avail
+{
+  p=ggplot(all_prep%>%select(PDATUM,Projekt)%>%na.omit(),
+       aes(x=as.Date(PDATUM),y=Projekt))+
+  geom_bin2d(color="black",aes(group=paste(year(PDATUM))),binwidth=365)+
+  scale_x_date(#limits = as.Date(c("1995-01-01","2023-06-01")),
+               date_breaks = "1 year",date_labels="%Y")+
+  scale_y_discrete(limits=rev)+
+  scale_fill_viridis_c()+
+  theme_pubr()+
+  theme(panel.grid.major = element_line(),
+        axis.text.x = element_text(angle=90,size=10,hjust=0,vjust=0.5),
+        axis.title = element_blank(),
+        legend.justification.top = "right")+
+  ggtitle("Probenverfügbarkeit der Auswahl")
+
+plot(p)
+}
+png("C:/Users/adam/Documents/GitHub/R_main/R_main/temp/zeitreihe_corg_sampling.png",height=500,width=1000)
+  plot(p)
+dev.off()
+
+
+```
+
+```{r}
+
+# sampling
+
+
+x=complete_BDF%>%filter(EntnahmeArt=="FA"&Projekt%in%c("BDF02","BDF13","BDF22","BDF23","BDF30","BDF33","BDF35","BDF42","BDF43","BDF46"))%>%filter(`obere Probentiefe`>=0&`untere Probentiefe`<=1)
+
+x$id=paste(x$SchichtID,year(x$PDATUM),sep="_")
+out<-c()          
+for (i in unique(x$id)){
+    out<-bind_rows(out,
+                   filter(x,id==i)%>%slice_sample(n=3)
+    )
+}
+
+sel=read_excel("~/GitHub/BDF_Auswahl_Zeitreihe/Final/Kopie von BDF_Zeitreihe_SampleList_dj.xlsx")
+
+not_avail=sel%>%filter(Standort== "nicht in Probenbank"&is.na(Alternativ_Standort))
+
+
+
+
+
+nrow(out)
+```
+
+# Split for FA / LA
+#### timeseries FA samples
+```{r}
+# BDF02
+
+p=c()
+FA_prep=c()
+for (i in(paste0("BDF",c("02",12,13,22,23,24,30,33,35,42,43,46)))){
+
+#Bodentyp z.T. unterschiedlich klassifieziert
+d=(BDF_Zeitreihe_soliTOC_all%>%
+           filter(Projekt==i&EntnahmeArt=="FA")%>%
+     mutate(`obere Probentiefe`=if_else(VZ_POT=="+",-1*`obere Probentiefe`,`obere Probentiefe`),
+            `untere Probentiefe`=if_else(VZ_PUT=="+",-1*`untere Probentiefe`,`untere Probentiefe`))%>%
+           select(`obere Probentiefe`,
+                  `untere Probentiefe`,
+                  TOC,
+                  Horizont,
+                  GEOL_SCHICHT,
+                  Hochwert,
+                  Rechtswert,
+                  PDATUM,
+                  Name,
+                  Projekt,
+                  SchichtID,
+                  Bodentyp,
+                  EntnahmeArt)%>%
+              rename(oTief=`obere Probentiefe`,
+                     uTief=`untere Probentiefe`)%>%
+     mutate(mTief=(oTief+uTief)/2,HORIZONT=if_else(is.na(GEOL_SCHICHT),Horizont,paste0(GEOL_SCHICHT,Horizont)))%>%
+     select(-GEOL_SCHICHT)%>%
+           na.omit)
+
+
+  p[[i]]=ggplot(d,
+           aes(ymin=oTief,
+               y=mTief,
+               ymax=uTief,
+               x=as.Date(PDATUM),
+               fill=HORIZONT,
+               col=HORIZONT))+
+      
+     geom_ribbon(alpha=.2)+
+      
+     geom_errorbar(aes(group=Name),alpha=.5,orientation = "x",
+                   width=as.numeric(abs(min(as.Date(d$PDATUM))-max(as.Date(d$PDATUM))))/50)+ # make end-notches 1/50 of timespan / x axis ()
+     geom_point(aes(text=EntnahmeArt))+
+      scale_x_date()+
+      
+    #coord_flip()+
+     scale_y_reverse()+
+      ylab("Tiefe [m]")+
+    xlab(i) # ggtitle is not shown in ggplotly
+  
+  FA_prep=bind_rows(FA_prep,d)
+
+  }
+
+
+  ggplotly(p[["BDF02"]])
+  ggplotly(p[["BDF12"]])
+  ggplotly(p[["BDF13"]])
+  ggplotly(p[["BDF22"]])
+  ggplotly(p[["BDF23"]])
+  ggplotly(p[["BDF24"]])
+  ggplotly(p[["BDF30"]])
+  ggplotly(p[["BDF33"]])
+  ggplotly(p[["BDF35"]])
+  ggplotly(p[["BDF42"]])
+  ggplotly(p[["BDF43"]])
+  ggplotly(p[["BDF46"]])
+  
+
+
+```
+#### timeseries LA samples
+```{r}
+# BDF02
+
+p=c()
+LA_prep=c()
+for (i in(paste0("BDF",c("02",12,13,22,23,24,30,33,35,42,43,46)))){
+
+#Bodentyp z.T. unterschiedlich klassifieziert
+d=(BDF_Zeitreihe_soliTOC_all%>%
+           filter(Projekt==i&EntnahmeArt=="LA")%>%
+     mutate(`obere Probentiefe`=if_else(VZ_POT=="+",-1*`obere Probentiefe`,`obere Probentiefe`),
+            `untere Probentiefe`=if_else(VZ_PUT=="+",-1*`untere Probentiefe`,`untere Probentiefe`))%>%
+           select(`obere Probentiefe`,
+                  `untere Probentiefe`,
+                  TOC,
+                  Horizont,
+                  GEOL_SCHICHT,
+                  Hochwert,
+                  Rechtswert,
+                  PDATUM,
+                  Projekt,
+                  Name,
+                  SchichtID,
+                  Bodentyp,
+                  EntnahmeArt)%>%
+              rename(oTief=`obere Probentiefe`,
+                     uTief=`untere Probentiefe`)%>%
+     mutate(mTief=(oTief+uTief)/2,HORIZONT=if_else(is.na(GEOL_SCHICHT),Horizont,paste0(GEOL_SCHICHT,Horizont)))%>%
+     select(-GEOL_SCHICHT)%>%
+           na.omit)
+ p[[i]]=ggplot(d,
+           aes(ymin=oTief,
+               y=mTief,
+               ymax=uTief,
+               x=as.Date(PDATUM),
+               fill=HORIZONT,
+               col=HORIZONT))+
+      
+     geom_ribbon(alpha=.2)+
+      
+     geom_errorbar(aes(group=Name),alpha=.5,orientation = "x",
+                   width=as.numeric(abs(min(as.Date(d$PDATUM))-max(as.Date(d$PDATUM))))/50)+ # make end-notches 1/50 of timespan / x axis ()
+     geom_point(aes(text=EntnahmeArt))+
+      scale_x_date()+
+      
+    #coord_flip()+
+     scale_y_reverse()+
+      ylab("Tiefe [m]")+
+    xlab(i) # ggtitle is not shown in ggplotly
+  
+  LA_prep=bind_rows(LA_prep,d)
+
+  }
+
+# some BDF do not have LA in selection
+  if(nrow(p[["BDF02"]]$data)>0){
+    ggplotly(p[["BDF02"]])}
+  if(nrow(p[["BDF12"]]$data)>0){
+    ggplotly(p[["BDF12"]])}
+  if(nrow(p[["BDF13"]]$data)>0){
+  ggplotly(p[["BDF13"]])}
+  if(nrow(p[["BDF22"]]$data)>0){
+  ggplotly(p[["BDF22"]])}
+  if(nrow(p[["BDF23"]]$data)>0){
+  ggplotly(p[["BDF23"]])}
+  if(nrow(p[["BDF24"]]$data)>0){
+  ggplotly(p[["BDF24"]])}
+  if(nrow(p[["BDF30"]]$data)>0){
+  ggplotly(p[["BDF30"]])}
+  if(nrow(p[["BDF33"]]$data)>0){
+  ggplotly(p[["BDF33"]])}
+  if(nrow(p[["BDF35"]]$data)>0){
+  ggplotly(p[["BDF35"]])}
+  if(nrow(p[["BDF42"]]$data)>0){
+  ggplotly(p[["BDF42"]])}
+  if(nrow(p[["BDF43"]]$data)>0){
+  ggplotly(p[["BDF43"]])}
+  if(nrow(p[["BDF46"]]$data)>0){
+  ggplotly(p[["BDF46"]])}
+  
+
+
+```
+
+### NOTE: all prep flag filtering moved to data loading chunks above
+
+
+# plots selection filtered sampling
+```{r}
+
+# NOTE: BfUL data still missing
+p_depth=c()
+for (i in(paste0("BDF",c("02",12,13,22,23,24,30,33,35,42,43,46)))){
+  print(i)
+  #Bodentyp z.T. unterschiedlich klassifiziert
+  d=(all_prep_flag%>%
+             filter(Projekt==i & !is.na(PDATUM) & sampling_flag=="ok")) # rm BfUL NAs, cleaner
+    p_depth[[i]]=ggplot(d,
+           aes(ymin=oTief,
+               y=mTief,
+               ymax=uTief,
+               x=as.Date(PDATUM),
+               fill=HORIZONT,
+               col=HORIZONT))+
+      
+       geom_ribbon(data=d%>%group_by(HORIZONT,PDATUM,EntnahmeArt)%>%summarise(uTief=max(uTief),oTief=min(oTief),mTief=mean(c(uTief,oTief))),alpha=.2)+
+      
+     geom_errorbar(aes(group=Name),alpha=.5,orientation = "x",
+                   width=as.numeric(abs(first((d$PDATUM),na.rm = T)-max(as.Date(d$PDATUM),na.rm = T)))/50)+ # make end-notches 1/50 of timespan / x axis ()
+     geom_point(aes(text=EntnahmeArt))+
+      scale_x_date()+
+      
+    #coord_flip()+
+     scale_y_reverse()+
+    xlab(i)+
+      facet_wrap(~EntnahmeArt,ncol=3)+
+      scale_color_manual(
+        breaks=BDF_complete_prep%>%filter(Projekt==i)%>%
+                           pull(HORIZONT)%>%unique,
+        values=gg_color_hue(BDF_complete_prep%>%filter(Projekt==i)%>%
+                              pull(HORIZONT)%>%unique%>%length))+
+      scale_fill_manual(
+        breaks=BDF_complete_prep%>%filter(Projekt==i)%>%
+                          pull(HORIZONT)%>%unique,
+        values=gg_color_hue(BDF_complete_prep%>%filter(Projekt==i)%>%
+                              pull(HORIZONT)%>%unique%>%length))+
+      ylab("Tiefe [m]")+
+      theme_pubr()# ggtitle is not shown in ggplotly # ggtitle is not shown in ggplotly
+   # p[[i]]
+   
+}
+
+
+
+for (i in BDF_list){
+ggsave(filename = paste0(code_dir,"GitLab/phd_code/R_main/temp/all_sel_fala_depth",i,".png"),device = "png",plot = p_depth[[i]],width=10,height=6)
+}
+  ggplotly(p_depth[["BDF02"]])
+  ggplotly(p_depth[["BDF12"]])
+  ggplotly(p_depth[["BDF13"]])
+  ggplotly(p_depth[["BDF22"]])
+  ggplotly(p_depth[["BDF23"]])
+  ggplotly(p_depth[["BDF24"]])
+  ggplotly(p_depth[["BDF30"]])
+  ggplotly(p_depth[["BDF33"]])
+  ggplotly(p_depth[["BDF35"]])
+  ggplotly(p_depth[["BDF42"]])
+  ggplotly(p_depth[["BDF43"]])
+  ggplotly(p_depth[["BDF46"]])
+  
+```
+
+# plots selection filtered sampling + avail
+```{r}
+
+# NOTE: BfUL data still missing
+p_depth_avail=c()
+for (i in(paste0("BDF",c("02",12,13,22,23,24,30,33,35,42,43,46)))){
+  print(i)
+  #Bodentyp z.T. unterschiedlich klassifiziert
+  d=(all_prep_flag%>%
+             filter(Projekt==i &
+                      !is.na(PDATUM) & 
+                      sampling_flag=="ok" & 
+                      avail_flag == "ok")) # rm BfUL NAs, cleaner
+    p_depth_avail[[i]]=ggplot(d,
+           aes(ymin=oTief,
+               y=mTief,
+               ymax=uTief,
+               x=as.Date(PDATUM),
+               fill=HORIZONT,
+               col=HORIZONT))+
+      
+       geom_ribbon(data=d%>%group_by(HORIZONT,PDATUM,EntnahmeArt)%>%summarise(uTief=max(uTief),oTief=min(oTief),mTief=mean(c(uTief,oTief))),alpha=.2)+
+      
+     geom_errorbar(aes(group=Name),alpha=.5,orientation = "x",
+                   width=as.numeric(abs(min(as.Date(d$PDATUM),na.rm = T)-max(as.Date(d$PDATUM),na.rm = T)))/50)+ # make end-notches 1/50 of timespan / x axis ()
+     geom_point(aes(text=EntnahmeArt))+
+      scale_x_date()+
+      
+    #coord_flip()+
+     scale_y_reverse()+
+    xlab(i)+
+      facet_wrap(~EntnahmeArt,ncol=3)+
+      scale_color_manual(
+        breaks=BDF_complete_prep%>%filter(Projekt==i)%>%
+                           pull(HORIZONT)%>%unique,
+        values=gg_color_hue(BDF_complete_prep%>%filter(Projekt==i)%>%
+                              pull(HORIZONT)%>%unique%>%length))+
+      scale_fill_manual(
+        breaks=BDF_complete_prep%>%filter(Projekt==i)%>%
+                          pull(HORIZONT)%>%unique,
+        values=gg_color_hue(BDF_complete_prep%>%filter(Projekt==i)%>%
+                              pull(HORIZONT)%>%unique%>%length))+
+      ylab("Tiefe [m]")+
+      theme_pubr()# ggtitle is not shown in ggplotly # ggtitle is not shown in ggplotly
+   # p[[i]]
+   
+}
+
+
+
+for (i in BDF_list){
+ggsave(filename = paste0(code_dir,"GitLab/phd_code/R_main/temp/all_sel_fala_depth_avail",i,".png"),device = "png",plot = p_depth_avail[[i]],width=10,height=6)
+}
+  ggplotly(p_depth_avail[["BDF02"]])
+  ggplotly(p_depth_avail[["BDF12"]])
+  ggplotly(p_depth_avail[["BDF13"]])
+  ggplotly(p_depth_avail[["BDF22"]])
+  ggplotly(p_depth_avail[["BDF23"]])
+  ggplotly(p_depth_avail[["BDF24"]])
+  ggplotly(p_depth_avail[["BDF30"]])
+  ggplotly(p_depth_avail[["BDF33"]])
+  ggplotly(p_depth_avail[["BDF35"]])
+  ggplotly(p_depth_avail[["BDF42"]])
+  ggplotly(p_depth_avail[["BDF43"]])
+  ggplotly(p_depth_avail[["BDF46"]])
+  
+```
+
+#remaining samples stats
+```{r}
+
+all_prep_flag%>%group_by(Projekt,HORIZONT)%>%
+  summarise(all=length(sampling_flag),
+            sim_depth=length(which(sampling_flag=="ok")),
+            avail=length(which(avail_flag=="ok")))%>%
+  mutate(HOR_avail=if_else(avail>0,1,0))%>%
+  group_by(Projekt)%>%
+  summarise(all_HORIZONT=length(unique(HORIZONT)),
+            all=sum(all),depth=sum(sim_depth),
+            avail=sum(avail),
+            rem_HORIZONT=sum(HOR_avail))%>%
+  write_excel_csv("./temp/zeitreihe_avail.csv")
+
+
+```
+
+# Day of year plot (seasonal influence)
+Note: Run again when depth increment flagging is implemented 
+```{r}
+
+
+
+
+ggplotly(
+ggplot(all_prep_flag%>%filter(!is.na(PDATUM)),
+       aes(x=yday(PDATUM),
+           y=TOC,
+           col=HORIZONT,
+           shape=paste("depth",sampling_flag,"  n",avail_flag)))+
+  geom_point(aes(text=paste(PDATUM,"uTief:",uTief,"oTief",oTief,"EntA:",EntnahmeArt)))+
+  #geom_line(aes(alpha=paste("depth",sampling_flag,"  n",avail_flag)))+
+  facet_wrap(facets = vars(Projekt),scales="free")+
+  xlab("Day of Year")+
+  #ylim(c(0,.2))+
+  scale_shape_manual("",breaks=c("depth flag   n flag","depth flag   n ok","depth ok   n flag","depth ok   n ok"),values=c(4,4,4,16))+
+  scale_alpha_manual("",breaks=c("depth flag   n flag","depth flag   n ok","depth ok   n flag","depth ok   n ok"),values=c(0,0,0,1))+
+  theme_pubr()#+
+  #geom_smooth(method="gam",se=F)
+  #ylab("TOC")
+)
+
+
+
+doy_plt=c()
+for (variable in c("CORG","TOC","ROC","ROCratio")){
+  print(variable)
+  for (i in BDF_list){
+    print(i)
+    doy_plt[[paste(variable,i)]]=plot(ggplot(all_prep_flag%>%filter(!is.na(PDATUM))%>%filter(Projekt==i)%>%mutate(y_var=.[[variable]]),
+         aes(x=yday(PDATUM),
+             y=y_var,
+             col=HORIZONT,
+             shape=paste("depth",sampling_flag,"  n",avail_flag)))+
+    geom_point(aes(text=paste(PDATUM,"uTief:",uTief,"oTief",oTief,"EntA:",EntnahmeArt)))+
+    #geom_line(aes(alpha=paste("depth",sampling_flag,"  n",avail_flag)))+
+    #facet_wrap(facets = vars(Projekt),scales="free")+
+    xlab("Day of Year")+
+      ylab(variable)+
+    #ylim(c(0,.2))+
+    scale_shape_manual("",
+                       breaks=c("depth flag   n flag","depth flag   n ok",
+                                "depth ok   n flag","depth ok   n ok"),
+                       values=c(4,4,4,16),
+                       labels=c("removed","removed","removed","ok"))+
+    scale_alpha_manual("",
+                       breaks=c("depth flag   n flag","depth flag   n ok",
+                                "depth ok   n flag","depth ok   n ok"),
+                       values=c(0,0,0,1),
+                       labels=c("removed","removed","removed","ok"))+
+    theme_pubr()+
+    theme(title = element_text(size=12),legend.position = "right")+
+    ggtitle(i)#+
+    #geom_smooth(method="gam",se=F)
+    #ylab("TOC")
+    )
+  
+  ggsave(filename = paste0(code_dir,"GitLab/phd_code/R_main/temp/doy_",variable,"_",i,".png"),device = "png",plot = doy_plt[[variable]][[i]],width=5,height=5)
+  
+  
+  }
+}
+
+
+```
+
+# Gesamtdatensatz probenverteilung month year
+```{r}
+# month vs year
+(ggplot(data%>%group_by(y=year(PDATUM),m,Projekt)%>%summarise(n=length(ProbenID)))+geom_point(aes(x=y,y=m,col=n))+ scale_y_discrete(breaks = month(c(1:12),label=T), 
+                                                                                               labels = month(c(1:12),label=T))+facet_wrap(~Projekt))%>%ggplotly
+
+(ggplot(all_prep_filtered%>%#filter(Projekt%in%c("BDF46"))%>%
+         group_by(y=year(PDATUM),m,Projekt,EntnahmeArt)%>%
+         summarise(n=length(ProbenID))
+       )+
+  geom_point(stroke=1,aes(x=y,y=m,col=n,shape=EntnahmeArt,size=EntnahmeArt))+ scale_y_discrete(breaks = month(c(1:12),label=T), 
+                                                                                               labels = month(c(1:12),label=T))+
+    scale_shape_manual("",
+                        breaks=c("FA","FO","LA","LO","VZ"),
+                        values=c(0,4,1,3,11))+
+    scale_size_manual("",
+                       breaks=c("FA","FO","LA","LO","VZ"),
+                      values=c(1,1,1,1,2)*2)+
+  scale_color_viridis_c(end=.8)+
+    facet_wrap(~Projekt)+
+  theme_pubr()+
+  ylab("Monat")+
+  xlab("Jahr"))%>%ggsave(filename = paste0(code_dir,"GitLab/phd_code/R_main/temp/month_year_sampling_examples.png"),device = "png",width=10,height=4)
+  
+  
+
+
+```
+
+
+
+# doy and scaled doy plots 
+```{r}
+doy_plt_all=c()
+for (variable in c("TOC","TOC400","Ct","TIC900","CORG","ROC","ROCratio")){
+  print(variable)
+  
+  ylab_=if_else(variable=="ROCratio",
+                "ROCratio [%]",
+                paste(variable,"[%]"))
+  
+    doy_plt_all[[variable]]=plot(ggplot(all_prep_flag%>%filter(!is.na(PDATUM)&sampling_flag=="ok"&avail_flag=="ok")%>%mutate(
+      Projekt=paste0(Projekt," (",Nutzung,")"),
+      y_var=.[[variable]]),
+         aes(x=yday(PDATUM),
+             y=y_var,
+             col=HORIZONT,
+             fill = HORIZONT)
+             )+
+    geom_point(aes(text=paste(PDATUM,"uTief:",uTief,"oTief",oTief,"EntA:",EntnahmeArt)),shape=21,col="black",alpha=.75)+
+   geom_smooth(method="loess",span=10,se=T,alpha=.1,linetype="dotted",linewidth=.25)+
+     geom_point(data=all_prep_flag%>%filter(!is.na(PDATUM)&(sampling_flag!="ok"|avail_flag!="ok"))%>%mutate(
+      Projekt=paste0(Projekt," (",Nutzung,")"),y_var=.[[variable]]),shape=4,col="grey")+
+    #geom_line(aes(alpha=paste("depth",sampling_flag,"  n",avail_flag)))+
+    #facet_wrap(facets = vars(Projekt),scales="free")+
+    xlab("Jahrestag")+
+    #ylim(c(0,.2))+
+    # scale_shape_manual("",
+    #                    breaks=c("depth flag   n flag","depth flag   n ok",
+    #                             "depth ok   n flag","depth ok   n ok"),
+    #                    values=c(4,4,4,16),
+    #                    labels=c("removed","removed","removed","ok"))+
+    # scale_alpha_manual("",
+    #                    breaks=c("depth flag   n flag","depth flag   n ok",
+    #                             "depth ok   n flag","depth ok   n ok"),
+    #                    values=c(0,0,0,1),
+    #                    labels=c("removed","removed","removed","ok"))+
+    theme_pubr()+
+    theme(title = element_text(size=12),legend.position = "right")+facet_wrap(~c(Projekt))+theme(legend.position = "none")+
+     ylab(ylab_)
+    #geom_smooth(method="gam",se=F)
+    #ylab("TOC")
+    )
+  
+  ggsave(filename = paste0(code_dir,"GitLab/phd_code/R_main/temp/DOY_",variable,".png"),device = "png",plot = doy_plt_all[[variable]],width=5,height=5)
+}
+#########################################################################
+
+
+
+#doy_plt_all_scaled$ROCratio+facet_wrap(~Projekt)+geom_smooth(method="glm",se=F)
+# compare plots for CORG, TOC, TOCpred
+
+var_="ROCratio"
+(doy_plt_all[[var_]]+facet_wrap(~Projekt,scales="free_y")+geom_smooth(method="glm",se=T,alpha=.1))%>%
+  ggsave(filename = paste0(code_dir,"GitLab/phd_code/R_main/temp/DOY_",var_,".png"),
+         device = "png",width=6,height=6)
+
+
+##############################################################################
+# # if implement: avg beforehand
+# doy_plt_all_scaled=c()
+# for (variable in c("TOC","TOC400","Ct","TIC900","CORG","ROC","ROCratio")){
+#   print(variable)
+#   
+#     doy_plt_all_scaled[[variable]]=plot(ggplot(all_prep_flag%>%filter(!is.na(PDATUM)&sampling_flag=="ok"&avail_flag=="ok")%>%mutate(y_var=.[[variable]])%>%group_by(Projekt,Horizont)%>%mutate(avg_y=mean(na.omit(y_var)),y_var_scaled=y_var/avg_y),
+#          aes(x=yday(PDATUM),
+#              y=y_var_scaled,
+#              col=HORIZONT,
+#              fill = HORIZONT)
+#              )+
+#     geom_point(aes(text=paste(PDATUM,"uTief:",uTief,"oTief",oTief,"EntA:",EntnahmeArt)),shape=21,col="black",
+#              alpha=.75)+
+#    geom_smooth(method="loess",span=10,se=T,alpha=.1,linetype="dotted",linewidth=.25)+
+#      geom_point(data=all_prep_flag%>%filter(!is.na(PDATUM)&(sampling_flag!="ok"|avail_flag!="ok"))%>%mutate(y_var=.[[variable]]),shape=4,col="grey")+
+#     #geom_line(aes(alpha=paste("depth",sampling_flag,"  n",avail_flag)))+
+#     #facet_wrap(facets = vars(Projekt),scales="free")+
+#     xlab("Jahrestag")+
+#       ylab(paste(variable, "skaliert"))+
+#     #ylim(c(0,.2))+
+#     # scale_shape_manual("",
+#     #                    breaks=c("depth flag   n flag","depth flag   n ok",
+#     #                             "depth ok   n flag","depth ok   n ok"),
+#     #                    values=c(4,4,4,16),
+#     #                    labels=c("removed","removed","removed","ok"))+
+#     # scale_alpha_manual("",
+#     #                    breaks=c("depth flag   n flag","depth flag   n ok",
+#     #                             "depth ok   n flag","depth ok   n ok"),
+#     #                    values=c(0,0,0,1),
+#     #                    labels=c("removed","removed","removed","ok"))+
+#     theme_pubr()+
+#     theme(title = element_text(size=12),legend.position = "right")+facet_wrap(~Projekt)
+#     #geom_smooth(method="gam",se=F)
+#     #ylab("TOC")
+#     )
+#   
+#  # ggsave(filename = paste0(code_dir,"GitLab/phd_code/R_main/temp/doy_",variable,"_",i,".png"),device = "png",plot = doy_plt[[variable]][[i]],width=5,height=5)
+# }
+#########################################################################
+
+
+
+# compare plots for CORG, TOC, TOCpred
+# no glm - no linear trend should be expected here. 
+for (var_ in c("TOC","TOC400","Ct","TIC900","CORG","ROC","ROCratio")){
+((doy_plt_all[[var_]])+theme(legend.position="none"))%>%
+    ggsave(filename = paste0(code_dir,"GitLab/phd_code/R_main/temp/DOY_",var_,".png"),
+         device = "png",width=6,height=6)
+}
+
+# 
+# 
+# # compare plots for CORG, TOC, TOCpred
+# # no glm - no linear trend should be expected here. 
+# for (var_ in c("TOC","TOC400","Ct","TIC900","CORG","ROC","ROCratio")){
+# (doy_plt_all_scaled[[var_]]%>%
+#     ggsave(filename = paste0(code_dir,"GitLab/phd_code/R_main/temp/DOY_scaled_",var_,".png"),
+#          device = "png",width=6,height=6)
+# }
+
+
+
+# monthly boxplots
+plt_data <- all_prep_flag %>% 
+  mutate(PDATUM = as.POSIXct(PDATUM))
+
+# Now extract the month with label
+plt_data <- plt_data %>% 
+  mutate(m = lubridate::month(PDATUM, label = TRUE))
+
+ggplot(plt_data%>%filter(!is.na(PDATUM)),
+       aes(x=m,labels=T,
+           y=TOC,
+       col=Projekt,
+           shape=paste("depth",sampling_flag,"  n",avail_flag)))+
+  geom_boxplot(aes(group=m),notch=T,outliers = F)+
+  geom_point(aes(text=PDATUM),position = position_jitter(width=.2))+
+  #geom_line(aes(alpha=paste("depth",sampling_flag,"  n",avail_flag)))+
+  #facet_wrap(facets = vars(Projekt))+
+  xlab("Month of Year")+
+  #ylim(c(0,.2))+
+  scale_shape_manual("",breaks=c("depth flag   n flag","depth flag   n ok","depth ok   n flag","depth ok   n ok"),values=c(4,4,4,16))+
+  scale_alpha_manual("",breaks=c("depth flag   n flag","depth flag   n ok","depth ok   n flag","depth ok   n ok"),values=c(0,0,0,1))+
+  theme_pubclean()
+  #ylab("TOC")
+
+
+
+
+
+# day of year correlation with C and C-fractions
+
+all_prep_filtered%>%
+  group_by(Projekt,HORIZONT)%>%
+  summarise(
+    Nutz=first(Nutzung),
+    cor_TOC400=cor(yday(PDATUM),TOC400,method="spearman"),
+    cor_ROC=cor(yday(PDATUM),ROC,method="spearman"),
+    cor_ROCratio=cor(yday(PDATUM),ROCratio,method="spearman"),
+    cor_TIC900=cor(yday(PDATUM),TIC900,method="spearman"),
+    cor_TOC=cor(yday(PDATUM),TOC,method="spearman"),
+    cor_TC=cor(yday(PDATUM),TC,method="spearman"))%>%View("spearman DOY")
+
+
+
+# group by sampling season (spring/summer/autumn)
+   (ggplot(filter(data,!is.na(Projekt)&!is.na(PDATUM)),aes(x=m))+
+       geom_bar(col="black",aes(fill=sel))+
+       theme_pubr()+
+       scale_x_discrete(breaks = month(c(1:12),label=T), 
+                        labels = month(c(1:12),label=T))+
+   #    theme(legend.position="none")+
+       xlab("Monat")+
+       ylab("Anzahl Proben")+
+       ggtitle("Saisonale Probenverteilung der BDF-Probendatenbank",
+               subtitle = "n=9195, davon n=618 in Auswahl, davon n=429 in bereinigter Auswahl")+
+       scale_fill_manual("Gruppen:",values=c("gray30","gray60","gray90"),
+                         breaks=c("a","b","c"),
+                         labels=c("Bereinigte Auswahl","Nicht in bereinigter Auswahl","Nicht analysiert")))%>%
+  ggsave(filename = paste0(code_dir,"GitLab/phd_code/R_main/temp/BDFcomplete_samples_monthly.png"),                                   device = "png",width=7,height=6)
+
+
+
+```
+
+
+# Seasonal grouping signif. diff
+
+```{r}
+# grouping Mar-May + Feb(few datapoints, no in Dec, Jan), Jun-Aug, Sep-Nov
+all_prep_filtered%>%mutate(season=case_when(
+    m%in%c("Feb","Mar","Apr","May")~"1Frühling",
+    m%in%c("Jun","Jul","Aug")~"2Sommer",
+    m%in%c("Sep","Oct","Nov")~"3Herbst"),
+    topbot=if_else(mTief<.2,"t","b"))->all_prep_filter_seasonal
+
+all_prep_filter_seasonal%>%
+  group_by(Projekt,season,HORIZONT)%>%ggplot()+geom_boxplot(aes(x=season,y=TOC,fill=HORIZONT))+facet_wrap(~Projekt)+stat_summary(geom="text",aes(y=0,label=stat),fun = length)#summarise(mean(TOC,na.rm = T))%>%
+
+group_by(Projekt,season,topbot)%>%
+  summarise(minTOC=min(TOC,na.rm = T),meanTOC=mean(TOC,na.rm = T),maxTOC=max(TOC,na.rm = T),n=length(na.omit(TOC)))%>%#filter(topbot=="t")%>%
+  ggplot(aes(group=Projekt,x=season,y=meanTOC,col=topbot,size=n))+geom_pointrange(aes(ymin=minTOC,ymax=maxTOC))+facet_wrap(~Projekt)+scale_size_continuous(range=c(.2,2))
+
+aov(data=all_prep_filter_seasonal,
+    formula=TOC~season*Projekt*topbot*year(PDATUM))%>%summary
+
+aov(data=all_prep_filter_seasonal,
+    formula=ROC~season*Projekt*topbot*year(PDATUM))%>%summary
+
+
+# gruselig aber was solls
+res=c()
+for (var_ in c("Ct","CORG","TC","TOC","TOC400","ROC","TIC900","ROCratio")){
+  for (p in unique(all_prep_filter_seasonal$Projekt)){
+    for (h in unique(all_prep_filter_seasonal$topbot)){
+      for (x in unique(all_prep_filter_seasonal$season)){
+        for (y in unique(all_prep_filter_seasonal$season)){
+          
+          X=all_prep_filter_seasonal%>%
+             filter(Projekt==p&topbot==h&season==x)%>%pull(var_)
+          Y=all_prep_filter_seasonal%>%
+             filter(Projekt==p&topbot==h&season==y)%>%pull(var_)
+          
+        if(length(X)>2&length(Y)>2){
+          
+          t_res=t.test(x=X,y=Y)
+                    
+        res=bind_rows(
+          res,
+          tibble(var=var_,
+                 Projekt=p,
+                  Horizont=h,
+                  seasonX=x,
+                  seasonY=y,
+                 nX=length(X),
+                 nY=length(Y),
+                 meanX=t_res$estimate[1],
+                 meanY=t_res$estimate[2],
+                 statistic=t_res$statistic,
+                 #parameter=t_res$parameter,
+                 p.value=t_res$p.value,
+                 #conf.int=t_res$conf_int,
+                 null.value=t_res$null.value,
+                 stderr=t_res$stderr,
+                 alternative=t_res$alternative,
+                 method=t_res$method,
+                 #data_name=t_res$data.name
+                      )
+        )
+        }else{
+            res=bind_rows(
+          res,
+          tibble(var=var_,
+                 Projekt=p,
+                  Horizont=h,
+                  seasonX=x,
+                  seasonY=y,
+                 nX=length(X),
+                 nY=length(Y),
+                 meanX=NA,
+                 meanY=NA,
+                 statistic=NA,
+                 parameter=NA,
+                 p.value=NA,
+                 #conf.int=NA,
+                 null.value=NA,
+                 stderr=NA,
+                 alternative=NA,
+                 method=NA,
+                 #data_name=NA
+                      )
+        )
+        }
+          }
+      }
+    }
+  }
+}
+write_excel_csv(res,paste0(code_dir,"GitLab/phd_code/R_main/temp/welchs_season.csv"))
+
+#ggsave(filename = paste0(code_dir,"GitLab/phd_code/R_main/temp/tst.png"),                                   device = "png",width=20,height=20)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+# Timeseries
+```{r}
+
+ts_plt_all=c()
+for (variable in c("TOC","TOC400","Ct","TIC900","CORG","ROC","ROCratio")){
+  print(variable)
+  ylab_=if_else(variable=="ROCratio",
+                "ROCratio [%]",
+                paste(variable,"[%]"))
+  
+    ts_plt_all[[variable]]=plot(ggplot(all_prep_flag%>%filter(!is.na(PDATUM)&sampling_flag=="ok"&avail_flag=="ok")%>%mutate(Projekt=paste0(Projekt," (",Nutzung,")"),y_var=.[[variable]]),
+         aes(x=PDATUM,
+             y=y_var,
+             col=HORIZONT,
+             fill = HORIZONT)
+             )+
+    geom_point(aes(text=paste(PDATUM,"uTief:",uTief,"oTief",oTief,"EntA:",EntnahmeArt)),shape=21,col="black",alpha=.75)+
+   geom_smooth(method="loess",span=10,se=T,alpha=.1,linetype="dotted",linewidth=.25))+geom_point(data=all_prep_flag%>%filter(!is.na(PDATUM)&(sampling_flag!="ok"|avail_flag!="ok"))%>%mutate(Projekt=paste0(Projekt," (",Nutzung,")"),y_var=.[[variable]]),shape=4,col="grey")+
+    #geom_line(aes(alpha=paste("depth",sampling_flag,"  n",avail_flag)))+
+    #facet_wrap(facets = vars(Projekt),scales="free")+
+    xlab("")+
+      ylab(ylab_)+
+    #ylim(c(0,.2))+
+    # scale_shape_manual("",
+    #                    breaks=c("depth flag   n flag","depth flag   n ok",
+    #                             "depth ok   n flag","depth ok   n ok"),
+    #                    values=c(4,4,4,16),
+    #                    labels=c("removed","removed","removed","ok"))+
+    # scale_alpha_manual("",
+    #                    breaks=c("depth flag   n flag","depth flag   n ok",
+    #                             "depth ok   n flag","depth ok   n ok"),
+    #                    values=c(0,0,0,1),
+    #                    labels=c("removed","removed","removed","ok"))+
+    theme_pubr()+
+    theme(title = element_text(size=12),legend.position = "none")+facet_wrap(~Projekt)+
+      scale_x_datetime("Datum",#breaks = as.POSIXct(c("2000-01-01","2010-01-01"),format="%Y-%m-%d"),
+  date_breaks = "5 years",date_labels = "%y")
+    #geom_smooth(method="gam",se=F)
+    #ylab("TOC")
+    
+
+}
+
+
+for (var_ in c("TOC","TOC400","Ct","TIC900","CORG","ROC","ROCratio")){
+(ts_plt_all[[var_]]+theme(legend.position = "none"))%>%
+  #  plot
+  ggsave(filename = paste0(code_dir,"GitLab/phd_code/R_main/temp/TS_",var_,".png"),device = "png",width=6,height=6)
+}
+
+
+ts_plt_all$TOC
+```
+
+
+# timeseries across different measurement methods
+```{r}
+
+
+individual_timeseries_plt=c()
+for (i in unique(all_prep_flag$Projekt)){
+  
+  all_prep_flag_sub=filter(all_prep_filter_seasonal,
+                          !is.na(PDATUM)&Projekt==i)
+  
+  all_prep_flag_sub=left_join(
+    all_prep_flag_sub,
+                             BDF_Zeitreihe_pred_snv%>%
+      select(Name,
+             `cubist_spc_sg_snv_rs4-log1p-Ct`,
+             `cubist_spc_sg_snv_rs4-log1p-CORG`,
+             `cubist_spc_sg_snv_rs4-log1p-TC`,
+             `cubist_spc_sg_snv_rs4-log1p-TOC`,
+             `cubist_spc_sg_snv_rs4-log1p-TOC400`,
+             `cubist_spc_sg_snv_rs4-log1p-ROC`,
+             `cubist_spc_sg_snv_rs4-log1p-TIC900`),#
+    by="Name")
+  
+  
+  
+  ggplot(all_prep_flag_sub%>%filter(sampling_flag=="ok"&avail_flag=="ok")%>%pivot_longer(cols=c("CORG",
+                      "TOC",
+                      "cubist_spc_sg_snv_rs4-log1p-TOC",
+                      "cubist_spc_sg_snv_rs4-log1p-CORG")),
+         aes(x=PDATUM,y=value,col=name,shape=HORIZONT,linetype=HORIZONT))+
+    geom_point(alpha=.5)+
+    geom_smooth(method="glm",alpha=.1)+
+    theme_pubr()->p
+
+  individual_timeseries_plt[[i]]=p
+
+}
+# hübsch machen
+# ggf. lm, linreg zw. Datenursprüngen vergleichen
+
+```
+# lm langfristige trends across mesurement methods
+```{r}
+
+
+
+all_prep_sesonal_pred%>%rename(
+  Ct_meas=Ct,
+  CORG_meas=CORG,
+  TC_meas=TC,
+  TOC_meas=TOC,
+  TOC400_meas=TOC400,
+  ROC_meas=ROC,
+  TIC900_meas=TIC900,
+  Ct_pred=`cubist_spc_sg_snv_rs4-log1p-Ct`,
+  CORG_pred=`cubist_spc_sg_snv_rs4-log1p-CORG`,
+  TC_pred=`cubist_spc_sg_snv_rs4-log1p-TC`,
+  TOC_pred=`cubist_spc_sg_snv_rs4-log1p-TOC`,
+  TOC400_pred=`cubist_spc_sg_snv_rs4-log1p-TOC400`,
+  ROC_pred=`cubist_spc_sg_snv_rs4-log1p-ROC`,
+  TIC900_pred=`cubist_spc_sg_snv_rs4-log1p-TIC900`
+  )%>%
+  mutate(
+    Projekt=paste(Projekt," (", Nutzung,")"),
+    yr_frac=yr_frac(PDATUM,start=1995))%>%
+  pivot_longer(cols=c(
+    "Ct_meas",
+    "Ct_pred",
+    "CORG_meas",
+    "CORG_pred",
+    "TC_meas",
+    "TC_pred",
+    "TOC_meas",
+    "TOC_pred",
+    "TOC400_meas",
+    "TOC400_pred",
+    "ROC_meas",
+    "ROC_pred",
+    "TIC900_meas",
+    "TIC900_pred",
+    "ROCratio"
+  ))%>%
+  mutate(variable=str_split_fixed(name,"_",2)[,1],
+         meas_pred=str_split_fixed(name,"_",2)[,2],
+         aquisition=case_when(
+           (variable%in%c("Ct","CORG")&
+              meas_pred=="meas")~"BDF_meas",
+           (variable%in%c("Ct","CORG")&
+              meas_pred=="pred")~"BDF_pred",
+           (variable%in%c("TC","TOC","TOC400","ROC","TIC900")&
+              meas_pred=="meas")~"soliTOC_meas",
+           (variable%in%c("TC","TOC","TOC400","ROC","TIC900")&
+              meas_pred=="pred")~"soliTOC_pred")
+         )%>%
+  mutate(variable=if_else(variable=="Ct","TC",
+                          if_else(variable=="CORG","TOC",
+                                  variable)))->all_prep_aggregated_meas
+
+
+
+# reasonably accurate, max error ~ 1day
+yr_frac=function(dates,start="1995-01-01"){return(as.numeric(difftime(dates,start,units = "days"))/365.25)}
+all_prep_aggregated_meas%>%
+  group_by(Projekt,Horizont,topbot,variable,aquisition)%>%
+  summarise(n=length(na.omit(value)),
+            intercept=lm(value~yr_frac)$coefficients[[1]],
+            slope=lm(value~yr_frac)$coefficients[[2]],
+            p.value=(lm(value~yr_frac)%>%anova)$`Pr(>F)`[[1]],
+            r2=(lm(value~yr_frac )%>%summary)$r.squared,
+            rmse=(lm(value~yr_frac)$residuals)**2%>%mean%>%sqrt
+            )->lm_table_timeseries
+  
+write_excel_csv2(lm_table_timeseries,paste0(code_dir,"GitLab/phd_code/R_main/temp/lm_timeseries.csv"))
+
+
+facet_timeseries_lm=c()
+for( var_ in c("TC","TOC","TOC400","ROC","TIC900")){
+  ## manual
+    #var_="ROC"
+  {
+    
+  if(var_%in%c("TC","TOC")){
+    
+    bdf_var=case_when(
+      var_=="TOC"~"CORG",
+      var_=="TC"~"Ct"
+    )
+      
+    labellist=c(paste("BDF",bdf_var),paste("DRIFTS", bdf_var),
+                paste("soliTOC", var_), paste("DRIFTS",var_))
+    
+    bdf_var=paste("and",bdf_var)
+  
+    }else{
+      bdf_var="" # for title
+      labellist=c(paste(""),paste(""),paste("soliTOC", var_), paste("DRIFTS",var_))
+  }
+  
+    
+    lm_table_timeseries%>%ungroup%>%select(-n,-intercept,-p.value,-r2,-Horizont)%>%
+  pivot_wider(names_from = c(topbot,aquisition),values_from = slope)%>%
+  filter(variable==var_)%>%
+  mutate(label=paste0(
+    if_else(is.na(t_BDF_meas),"",paste0(labellist[1],
+                                        " O: ",round(t_BDF_meas,digits=3),"\n")),
+    if_else(is.na(t_BDF_pred),"",paste0(labellist[2],
+                                        " O: ",round(t_BDF_pred,digits=3),"\n")),
+    if_else(is.na(t_soliTOC_meas),"",paste0(labellist[3],
+                                        " O: ",round(t_soliTOC_meas,digits=3),"\n")),
+    if_else(is.na(t_soliTOC_pred),"",paste0(labellist[4],
+                                        " O: ",round(t_soliTOC_pred,digits=3),"\n")),
+   
+    if_else(is.na(b_BDF_meas),"",paste0(labellist[1],
+                                    " U: ",round(b_BDF_meas,digits=3),"\n")),
+    if_else(is.na(b_BDF_pred),"",paste0(labellist[2],
+                                        " U: ",round(b_BDF_pred,digits=3),"\n")),
+    if_else(is.na(b_soliTOC_meas),"",paste0(labellist[3],
+                                        " U: ",round(b_soliTOC_meas,digits=3),"\n")),
+    if_else(is.na(b_soliTOC_pred),"",paste0(labellist[4],
+                                        " U: ",round(b_soliTOC_pred,digits=3),"\n")))
+  )->lm_table_label
+  
+  
+  all_prep_aggregated_meas%>%
+    filter(variable==var_)%>%
+    ggplot(
+         aes(x=PDATUM,y=value
+               ))+
+    geom_point(alpha=.5,col="black",
+               aes(
+
+                   shape=aquisition,
+                   fill=topbot
+                  ))+
+    geom_smooth(method="glm",alpha=.05,linewidth=.5,
+               aes(
+                   col=topbot,
+                   fill=topbot,
+                   linetype=aquisition))+
+    scale_shape_manual("Daten",
+                       breaks=c("BDF_meas","BDF_pred","soliTOC_meas","soliTOC_pred"),
+                       values=c(21:24),
+                       labels=labellist)+
+    scale_linetype_manual("Daten",
+                       breaks=c("BDF_meas","BDF_pred","soliTOC_meas","soliTOC_pred"), 
+                       values=c(1:4),
+                       labels=labellist)+
+    scale_color_manual("Horizont",breaks=c("t","b"),
+                       values=colorblind_safe_colors[c(4,7)],
+                       labels=c("Oberboden","Unterboden"))+
+    scale_fill_manual("Horizont",breaks=c("t","b"),
+                      values=colorblind_safe_colors[c(4,7)],
+                      labels=c("Oberboden","Unterboden"))+
+    theme_pubr()+
+    ylab(paste0(var_,bdf_var," [M-%]"))+
+    geom_label(data=lm_table_label,size = 3,
+               x=-Inf,y=Inf,hjust=0,vjust=1, # topright,
+             aes(label=label),col="black",fill="white")+
+    scale_x_datetime("",date_labels = "%y",date_breaks = "5 years",limits = as.POSIXct(c("1985-01-01","2018-01-01")))+
+    #ggtitle(paste(var_,bdf_var))+
+    facet_wrap(~Projekt,ncol=2)+
+    theme(legend.position = "right")->p
+  
+  
+  }
+  
+  facet_timeseries_lm[[var_]]=p
+  
+  # ggsave(filename = paste0("timeline_lm_meas_pred_",var_,".png"),
+  #        plot=p,device = "png",
+  #        path = paste0(code_dir,"GitLab/phd_code/R_main/temp/"),width=10,height=15)
+  
+}
+
+
+```
+
+
+#aggregating stats lm trends
+```{r}
+lm_table_timeseries%>%
+  filter(#p.value<.05&
+           !is.na(aquisition))%>%
+  select(Projekt,topbot,variable,aquisition,slope,p.value)%>%
+  mutate(variable=ifelse(str_detect(variable,"TOC")&
+                           !str_detect(variable,"TOC400"),"TOC_",variable))%>%
+  pivot_wider(names_from = aquisition,
+              values_from = c(slope,p.value))%>%
+  mutate(
+    soliTOC_diff=slope_soliTOC_pred-slope_soliTOC_meas,
+    BDF_diff=slope_BDF_pred-slope_BDF_meas,
+    soliTOC_BDF_diff=slope_soliTOC_meas-slope_BDF_meas)%>%
+  filter(!is.na(soliTOC_diff)|!is.na(BDF_diff))%>%
+  write_excel_csv(paste0(code_dir,"GitLab/phd_code/R_main/temp/timeseries_slope_diff_meas.csv"))
+  # mutate(
+  #        rel_soliTOC_diff=soliTOC_diff/soliTOC_meas*100,
+  #        rel_BDF_diff=BDF_diff/BDF_meas*100)%>%view
+
+```
+
+# aggregating contrations first and last sampling for each horizon / projekt
+```{r}
+
+first_last=c()
+for (i in c("Ct","CORG","TC","TOC","TOC400","ROC","TIC900","ROCratio")){
+
+  all_prep_filter_seasonal_i=all_prep_filter_seasonal%>%filter(!is.na(.data[[i]]))
+  aggregate_prep=left_join(all_prep_filter_seasonal_i,all_prep_filter_seasonal_i%>%
+            group_by(Projekt,HORIZONT)%>%
+            summarise(min_year=year(min(PDATUM)),
+                      max_year=year(max(PDATUM))),
+          by=c("Projekt","HORIZONT"))
+  
+  
+  
+  
+ first_last=bind_rows(
+  first_last,
+    left_join(
+    aggregate_prep%>%
+      filter(year(PDATUM)==min_year)%>%
+      group_by(Projekt,HORIZONT)%>%
+      summarise(variable=i,first_year=mean(min_year, na.rm = T),
+                n=length(na.omit(.data[[i]])),avg=mean(.data[[i]],ra.rm=T)),
+    aggregate_prep%>%
+      filter(year(PDATUM)==max_year)%>%
+      group_by(Projekt,HORIZONT)%>%
+      summarise(last_year=mean(max_year, na.rm = T),
+                n=length(na.omit(.data[[i]])),avg=mean(.data[[i]],ra.rm=T)),
+      by=c("Projekt","HORIZONT"),
+    suffix = c(".first",".last")
+    )
+)
+}
+
+first_last=mutate(first_last,diff=avg.last-avg.first)
+View(first_last)
+filter(first_last,variable=="ROCratio")%>%mutate(avg.first=avg.first*100,
+                                                 avg.last=avg.last*100,
+                                                 diff=diff*100)%>%view
+
+
+
+```
+
+
+# sampling date shifts
+```{r}
+
+
+  print(variable)
+  
+    date_plt_all=plot(ggplot(all_prep_flag%>%filter(!is.na(PDATUM)&sampling_flag=="ok"&avail_flag=="ok")%>%mutate(y_var=.[[variable]]),
+         aes(x=PDATUM,
+             y=yday(PDATUM)#,
+             #col=HORIZONT,
+             #fill = HORIZONT
+             )
+             )+
+    geom_point(aes(text=paste(PDATUM,"uTief:",uTief,"oTief",oTief,"EntA:",EntnahmeArt)),shape=21,col="black",alpha=.75)+
+    #geom_line(aes(alpha=paste("depth",sampling_flag,"  n",avail_flag)))+
+    #facet_wrap(facets = vars(Projekt),scales="free")+
+    xlab("Year")+
+      ylab("DOY")+
+    #ylim(c(0,.2))+
+    # scale_shape_manual("",
+    #                    breaks=c("depth flag   n flag","depth flag   n ok",
+    #                             "depth ok   n flag","depth ok   n ok"),
+    #                    values=c(4,4,4,16),
+    #                    labels=c("removed","removed","removed","ok"))+
+    # scale_alpha_manual("",
+    #                    breaks=c("depth flag   n flag","depth flag   n ok",
+    #                             "depth ok   n flag","depth ok   n ok"),
+    #                    values=c(0,0,0,1),
+    #                    labels=c("removed","removed","removed","ok"))+
+    theme_pubr()+
+    theme(title = element_text(size=12),legend.position = "right")
+    #geom_smooth(method="gam",se=F)
+    #ylab("TOC")
+    )
+
+
+
+
+(date_plt_all+facet_wrap(~Projekt)+
+   geom_smooth(method="loess",span=10,se=T,alpha=.1,linetype="dotted",linewidth=.25))%>%
+  plot#  ggsave(filename = paste0(code_dir,"GitLab/phd_code/R_main/temp/TS_",var_,".png"),
+  #       device = "png",width=6,height=6)
+
+
+
+
+```
+
+
+
+```{r}
+ggplot(all_prep_flag%>%
+  filter(sampling_flag=="ok"&avail_flag=="ok"),
+       aes(x=as.POSIXct(PDATUM),
+           y=TOC,
+           col=HORIZONT,
+           shape=paste("depth",sampling_flag,"  n",avail_flag)))+
+  geom_point()+
+  geom_smooth(method="glm",se=T)+
+  
+  ## add removed datapoints for problem visualisation
+  #geom_point(data = all_prep_flag,shape=4,size=.5)+
+  #geom_smooth(data = all_prep_flag,method="glm",se=T,linewidth=.5,linetype="dotted")+
+  
+  facet_wrap(facets = vars(Projekt))+
+  xlab("Day of Year")+
+  #ylim(c(0,.2))+
+  scale_shape_manual("",breaks=c("depth flag   n flag","depth flag   n ok","depth ok   n flag","depth ok   n ok"),values=c(4,4,4,16))+
+  scale_alpha_manual("",breaks=c("depth flag   n flag","depth flag   n ok","depth ok   n flag","depth ok   n ok"),values=c(0,0,0,1))
+  #ylab("TOC")
+```
+
+
+```{r}
+
+
+p=c()
+for (i in(paste0("BDF",c("02",12,13,22,23,24,30,33,35,42,43,46)))){
+  
+  
+    p[[i]]=ggplot(filter(all_prep_flag,Projekt==i&sampling_flag=="ok"&avail_flag=="ok"),
+           aes(ymin=oTief,
+               y=mTief,
+               ymax=uTief,
+               x=as.Date(PDATUM),
+               fill=HORIZONT,
+               col=HORIZONT))+
+      
+     geom_ribbon(alpha=.2)+
+      
+     geom_errorbar(aes(group=Name),alpha=.5,orientation = "x",
+                   width=as.numeric(abs(min(as.Date(d$PDATUM))-max(as.Date(d$PDATUM))))/50)+ # make end-notches 1/50 of timespan / x axis ()
+     geom_point(aes(text=EntnahmeArt))+
+      scale_x_date()+
+      
+    #coord_flip()+
+     scale_y_reverse()+
+    xlab(i) # ggtitle is not shown in ggplotly
+   # p[[i]]
+
+  }
+
+  ggplotly(p[["BDF02"]])
+  ggplotly(p[["BDF12"]])
+  ggplotly(p[["BDF13"]])
+  ggplotly(p[["BDF22"]])
+  ggplotly(p[["BDF23"]])
+  ggplotly(p[["BDF24"]])
+  ggplotly(p[["BDF30"]])
+  ggplotly(p[["BDF33"]])
+  ggplotly(p[["BDF35"]])
+  ggplotly(p[["BDF42"]])
+  ggplotly(p[["BDF43"]])
+  ggplotly(p[["BDF46"]])
+
+```     
+
+
+
+# ####################################################################################
+#### #### MODEL PROEDICTIONS OLD ####
+# best snv models for fractions -> maybe redo / check
+TC            none
+TOC           log1p
+TOC400        log1p
+ROC           log1p
+TIC900        none
+# get cubist snv metrics
+```{r}
+
+evaluation=read_rds("~/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models/evaluation")
+
+
+evaluation$new_eval_table%>%filter(set=="spc_sg_snv_rs4")%>%
+  filter(variable=="TC"&trans=="none"|
+variable=="TOC"&trans=="log1p"|
+variable=="TOC400"&trans=="log1p"|
+variable=="ROC"&trans=="log1p"|
+variable=="TIC900"&trans=="none")%>%select(variable,rmse,R2,linsCCC,bias,b)
+
+
+```
+
+
+#obspred train
+pull the observations and predictions of respective training sets
+```{r}
+
+
+# init obspred
+#OBS_PRED_train=rename(BDF_Zeitreihe_soliTOC,sample_id=Name)%>%select(sample_id,TOC,TC,TOC400,ROC,TIC900)
+# predict TC with cubist model
+//TC_train=(read_rds("~/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models/cubist_spc_sg_snv_rs4-none-TC"))$documentation$train
+
+train_cubist_snv_TC=predict_variable(target_data = TC_train,model_folder = "~/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models",prefix = "cubist_",variable_ = "TC",fixed_set = "spc_sg_snv_rs4")
+
+TC_obspred_train=tibble(obs=TC_train%>%pull(TC),pred=train_cubist_snv_TC$predictions$pred)
+TC_obspred_train%>%ggplot(aes(x=obs,y=pred))+geom_point()
+
+
+
+# predict TOC with cubist model
+TOC_train=(read_rds("~/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models/cubist_spc_sg_snv_rs4-log1p-TOC"))$documentation$train
+
+train_cubist_snv_TOC=predict_variable(target_data = TOC_train,model_folder = "~/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models",prefix = "cubist_",variable_ = "TOC",fixed_set = "spc_sg_snv_rs4")
+
+TOC_obspred_train=tibble(obs=exp(TOC_train%>%pull(TOC))-1,pred=train_cubist_snv_TOC$predictions$pred)
+TOC_obspred_train%>%ggplot(aes(x=obs,y=pred))+geom_point()
+
+
+# predict TOC400 with cubist model
+TOC400_train=(read_rds("~/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models/cubist_spc_sg_snv_rs4-log1p-TOC400"))$documentation$train
+
+train_cubist_snv_TOC400=predict_variable(target_data = TOC400_train,model_folder = "~/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models",prefix = "cubist_",variable_ = "TOC400",fixed_set = "spc_sg_snv_rs4")
+
+TOC400_obspred_train=tibble(obs=exp(TOC400_train%>%pull(TOC400))-1,pred=train_cubist_snv_TOC400$predictions$pred)
+TOC400_obspred_train%>%ggplot(aes(x=obs,y=pred))+geom_point()
+
+
+# predict ROC with cubist model
+ROC_train=(read_rds("~/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models/cubist_spc_sg_snv_rs4-log1p-ROC"))$documentation$train
+
+train_cubist_snv_ROC=predict_variable(target_data = ROC_train,model_folder = "~/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models",prefix = "cubist_",variable_ = "ROC",fixed_set = "spc_sg_snv_rs4")
+
+ROC_obspred_train=tibble(obs=exp(ROC_train%>%pull(ROC))-1,pred=train_cubist_snv_ROC$predictions$pred)
+ROC_obspred_train%>%ggplot(aes(x=obs,y=pred))+geom_point()
+
+
+# predict TIC900 with cubist model
+TIC900_train=(read_rds("~/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models/cubist_spc_sg_snv_rs4-none-TIC900"))$documentation$train
+
+train_cubist_snv_TIC900=predict_variable(target_data = TIC900_train,model_folder = "~/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models",prefix = "cubist_",variable_ = "TIC900",fixed_set = "spc_sg_snv_rs4")
+
+TIC900_obspred_train=tibble(obs=TIC900_train%>%pull(TIC900),pred=train_cubist_snv_TIC900$predictions$pred)
+TIC900_obspred_train%>%ggplot(aes(x=obs,y=pred))+geom_point()
+
+
+}
+
+```
+
+
+
+# Zeitreihe obspred
+predict variables for the Zeitreihe dataset
+```{r}
+{
+
+# init obspred
+OBS_PRED=rename(BDF_Zeitreihe_soliTOC,sample_id=Name)%>%select(sample_id,TOC,TC,TOC400,ROC,TIC900)
+# predict TC with cubist model
+Zeitreihe_cubist_snv_TC=predict_variable(
+  target_data = BDF_Zeitreihe_spc,model_folder = paste0(root_dir,"/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models"),
+  prefix = "cubist_",
+  variable_ = "TC",
+  fixed_set = "spc_sg_snv_rs4")
+# merge results to obspred
+OBS_PRED=left_join(OBS_PRED,
+                   left_join(Zeitreihe_cubist_snv_TC$predictions%>%rename(cubist_snv_TC_pred=pred),
+                             Zeitreihe_cubist_snv_TC$spc_diss%>%rename(cubist_snv_TC_mean_diss=mean_diss,
+                                                             cubist_snv_TC_diss_flag=diss_flag)
+                             ,by="sample_id")
+                   ,by="sample_id")
+
+# predict TOC with cubist model
+Zeitreihe_cubist_snv_TOC=predict_variable(
+  target_data = BDF_Zeitreihe_spc,model_folder = paste0(root_dir,"/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models"),
+  prefix = "cubist_",
+  variable_ = "TOC",
+  fixed_set = "spc_sg_snv_rs4")
+# merge results
+OBS_PRED=left_join(OBS_PRED,
+                   left_join(Zeitreihe_cubist_snv_TOC$predictions%>%rename(cubist_snv_TOC_pred=pred),
+                             Zeitreihe_cubist_snv_TOC$spc_diss%>%rename(cubist_snv_TOC_mean_diss=mean_diss,
+                                                             cubist_snv_TOC_diss_flag=diss_flag)
+                             ,by="sample_id")
+                   ,by="sample_id")
+
+
+# predict TOC400 with cubist model
+Zeitreihe_cubist_snv_TOC400=predict_variable(target_data = BDF_Zeitreihe_spc,model_folder = "~/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models",prefix = "cubist_",variable_ = "TOC400",fixed_set = "spc_sg_snv_rs4")
+# merge results to obspred
+OBS_PRED=left_join(OBS_PRED,
+                   left_join(Zeitreihe_cubist_snv_TOC400$predictions%>%rename(cubist_snv_TOC400_pred=pred),
+                             Zeitreihe_cubist_snv_TOC400$spc_diss%>%rename(cubist_snv_TOC400_mean_diss=mean_diss,
+                                                             cubist_snv_TOC400_diss_flag=diss_flag)
+                             ,by="sample_id")
+                   ,by="sample_id")
+
+
+# predict ROC with cubist model
+Zeitreihe_cubist_snv_ROC=predict_variable(target_data = BDF_Zeitreihe_spc,model_folder = "~/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models",prefix = "cubist_",variable_ = "ROC",fixed_set = "spc_sg_snv_rs4")
+# merge results to obspred
+OBS_PRED=left_join(OBS_PRED,
+                   left_join(Zeitreihe_cubist_snv_ROC$predictions%>%rename(cubist_snv_ROC_pred=pred),
+                             Zeitreihe_cubist_snv_ROC$spc_diss%>%rename(cubist_snv_ROC_mean_diss=mean_diss,
+                                                             cubist_snv_ROC_diss_flag=diss_flag)
+                             ,by="sample_id")
+                   ,by="sample_id")
+
+
+# predict TIC900 with cubist model
+Zeitreihe_cubist_snv_TIC900=predict_variable(target_data = BDF_Zeitreihe_spc,model_folder = "~/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models",prefix = "cubist_",variable_ = "TIC900",fixed_set = "spc_sg_snv_rs4")
+# merge results to obspred
+OBS_PRED=left_join(OBS_PRED,
+                   left_join(Zeitreihe_cubist_snv_TIC900$predictions%>%rename(cubist_snv_TIC900_pred=pred),
+                             Zeitreihe_cubist_snv_TIC900$spc_diss%>%rename(cubist_snv_TIC900_mean_diss=mean_diss,
+                                                             cubist_snv_TIC900_diss_flag=diss_flag)
+                             ,by="sample_id")
+                   ,by="sample_id")
+}
+OBS_PRED_Zeitreihe=OBS_PRED
+
+
+
+# load OSSL TC predictions
+OSSL_TC_Zeitreihe=read_rds("~/GitHub/R_main/R_main/OSSL model output/BDF_Zeitreihe/csv/BDF_Zeitreihe_log..c.tot_usda.a622_w.pct")
+# merge
+OBS_PRED_Zeitreihe=left_join(OBS_PRED_Zeitreihe,
+                   rename(OSSL_TC_Zeitreihe,
+                          OSSL_TC_pred=c.tot_usda.a622_w.pct,
+                          OSSL_TC_std_dev=std_dev,
+                          OSSL_TC_margin_lower=lower,
+                          OSSL_TC_margin_upper=upper,
+                          OSSL_TC_flag=underrepresented
+                   )
+                   ,by="sample_id")
+
+OSSL_TOC_Zeitreihe=read_rds("~/GitHub/R_main/R_main/OSSL model output/BDF_Zeitreihe/csv/BDF_Zeitreihe_log..oc_usda.c729_w.pct")
+# merge
+OBS_PRED_Zeitreihe=left_join(OBS_PRED_Zeitreihe,
+                   rename(OSSL_TOC_Zeitreihe,
+                          OSSL_TOC_pred=oc_usda.c729_w.pct,
+                          OSSL_TOC_std_dev=std_dev,
+                          OSSL_TOC_margin_lower=lower,
+                          OSSL_TOC_margin_upper=upper,
+                          OSSL_TOC_flag=underrepresented
+                   )
+                   ,by="sample_id")
+
+
+
+
+
+
+ggplot(OBS_PRED_Zeitreihe,aes(x=TC,y=OSSL_TC_pred))+geom_point()+geom_point(aes(y=cubist_snv_TC_pred),col="red")
+
+
+
+
+
+
+
+zr_eval=rbind(
+  data.frame(pred_set="BDF_TC",
+             evaluate_model_adjusted(OBS_PRED,obs = "TC",pred="cubist_snv_TC_pred")),
+  data.frame(pred_set="BDF_TOC",
+             evaluate_model_adjusted(OBS_PRED,obs = "TOC",pred="cubist_snv_TOC_pred")),
+  data.frame(pred_set="BDF_TOC400",
+             evaluate_model_adjusted(OBS_PRED,obs = "TOC400",pred="cubist_snv_TOC400_pred")),
+  data.frame(pred_set="BDF_ROC",
+             evaluate_model_adjusted(OBS_PRED,obs = "ROC",pred="cubist_snv_ROC_pred")),
+  data.frame(pred_set="BDF_TIC900",
+             evaluate_model_adjusted(OBS_PRED,obs = "TIC900",pred="cubist_snv_TIC900_pred"))
+)
+
+
+
+
+
+
+
+
+
+
+
+
+{
+  svg(paste0(root_dir,"/GitHub/R_main/R_main/temp/BDF_Zeitreihe_obs_pred_cubist_snv_withTest.svg"),width = 15,height = 3.5)
+  plot(
+ggarrange(
+### TC plot ####
+  ggplot(OBS_PRED
+         ,aes(x=TC,y=cubist_snv_TC_pred))+
+  geom_abline(intercept = 0,slope = 1,linetype="dotted")+
+  geom_point(aes(col="Zeitreihe"),alpha=.25,shape=19)+
+  theme_pubr() +
+  xlab("observed")+
+  ylab("predicted")+
+  xlim(c(0,7.3))+
+  ylim(c(0,7.3))+
+  ggtitle("TC")+
+      geom_point(data=cubist_snv_TC$model$documentation$ObsPred_test,aes(x=obs,y=pred,col="test"),shape=4)+  
+      scale_color_manual("",
+                         breaks=c("test","Zeitreihe"),
+                         values=c("red4","black"),
+                         labels=c("Testset","Neue Rückstellproben")),
+  
+### TOC plot ####
+ggplot(OBS_PRED
+         ,aes(x=TOC,y=cubist_snv_TOC_pred))+
+  geom_abline(intercept = 0,slope = 1,linetype="dotted")+
+  geom_point(aes(col="Zeitreihe"),alpha=.25,shape=19)+
+  theme_pubr() +
+  xlab("observed")+
+  ylab("predicted")+
+  xlim(c(0,7.3))+
+  ylim(c(0,7.3))+
+  ggtitle("TOC")+
+      geom_point(data=cubist_snv_TOC$model$documentation$ObsPred_test,aes(x=obs,y=pred,col="test"),shape=4)+  
+      scale_color_manual("",
+                         breaks=c("test","Zeitreihe"),
+                         values=c("red4","black"),
+                         labels=c("Testset","Neue Rückstellproben")),
+ 
+### TOC400 plot ####
+ggplot(OBS_PRED
+         ,aes(x=TOC400,y=cubist_snv_TOC400_pred))+
+  geom_abline(intercept = 0,slope = 1,linetype="dotted")+
+  geom_point(aes(col="Zeitreihe"),alpha=.25,shape=19)+
+  theme_pubr() +
+  xlab("observed")+
+  ylab("predicted")+
+  xlim(c(-.01,7))+
+  ylim(c(-.01,7))+
+  ggtitle("TOC400")+
+  geom_point(data=cubist_snv_TOC400$model$documentation$ObsPred_test,aes(x=obs,y=pred,col="test"),shape=4)+  
+  scale_color_manual("",
+                     breaks=c("test","Zeitreihe"),
+                     values=c("red4","black"),
+                     labels=c("Testset","Neue Rückstellproben")),
+
+### ROC plot ####
+ggplot(OBS_PRED
+         ,aes(x=ROC,y=cubist_snv_ROC_pred))+
+  geom_abline(intercept = 0,slope = 1,linetype="dotted")+
+  geom_point(aes(col="Zeitreihe"),alpha=.25,shape=19)+
+  theme_pubr() +
+  xlab("observed")+
+  ylab("predicted")+
+  xlim(c(-.06,.7))+
+  ylim(c(-.06,.7))+
+  ggtitle("ROC")+
+      geom_point(data=cubist_snv_ROC$model$documentation$ObsPred_test,aes(x=obs,y=pred,col="test"),shape=4)+  
+      scale_color_manual("",
+                         breaks=c("test","Zeitreihe"),
+                         values=c("red4","black"),
+                         labels=c("Testset","Neue Rückstellproben")),
+ ### TIC900 plot ####
+ggplot(OBS_PRED
+         ,aes(x=TIC900,y=cubist_snv_TIC900_pred))+
+  geom_abline(intercept = 0,slope = 1,linetype="dotted")+
+  geom_point(aes(col="Zeitreihe"),alpha=.25,shape=19)+
+  theme_pubr() +
+  xlab("observed")+
+  ylab("predicted")+
+  xlim(c(-.02,.33))+
+  ylim(c(-.02,.33))+
+  ggtitle("TIC900")+
+      geom_point(data=cubist_snv_TIC900$model$documentation$ObsPred_test,aes(x=obs,y=pred,col="test"),shape=4)+  
+      scale_color_manual("",
+                         breaks=c("test","Zeitreihe"),
+                         values=c("red4","black"),
+                         labels=c("Testset","Neue Rückstellproben")),
+  common.legend = T,nrow = 1
+)
+)
+dev.off()
+}
+
+
+
+```
+# Zeitreihe hex bin
+...because simple points are getting to cluttered
+```{r}
+ggarrange(
+### TC plot ####
+  ggplot(OBS_PRED
+         ,aes(x=TC,y=cubist_snv_TC_pred))+
+  geom_abline(intercept = 0,slope = 1,linetype="dotted")+
+  geom_hex(binwidth=0.25)+
+  theme_pubr() +
+  xlab("observed")+
+  ylab("predicted")+
+  xlim(c(0,7.3))+
+  ylim(c(0,7.3))+
+  ggtitle("TC")+
+      geom_point(data=cubist_snv_TC$model$documentation$ObsPred_test,aes(x=obs,y=pred,col="test"),shape=4)+  
+      scale_color_manual("",
+                         breaks=c("test","Zeitreihe"),
+                         values=c("red4","black"),
+                         labels=c("Testset","Neue Rückstellproben"))+
+  scale_fill_viridis_c(),
+  
+### TOC plot ####
+ggplot(OBS_PRED
+         ,aes(x=TOC,y=cubist_snv_TOC_pred))+
+  geom_abline(intercept = 0,slope = 1,linetype="dotted")+
+  geom_hex(binwidth=0.25)+
+  theme_pubr() +
+  xlab("observed")+
+  ylab("predicted")+
+  xlim(c(0,7.3))+
+  ylim(c(0,7.3))+
+  ggtitle("TOC")+
+      geom_point(data=cubist_snv_TOC$model$documentation$ObsPred_test,aes(x=obs,y=pred,col="test"),shape=4)+  
+      scale_color_manual("",
+                         breaks=c("test","Zeitreihe"),
+                         values=c("red4","black"),
+                         labels=c("Testset","Neue Rückstellproben"))+
+  scale_fill_viridis_c(),
+ 
+### TOC400 plot ####
+ggplot(OBS_PRED
+         ,aes(x=TOC400,y=cubist_snv_TOC400_pred))+
+  geom_abline(intercept = 0,slope = 1,linetype="dotted")+
+  geom_hex(binwidth=0.25)+
+  theme_pubr() +
+  xlab("observed")+
+  ylab("predicted")+
+  xlim(c(-.01,7))+
+  ylim(c(-.01,7))+
+  ggtitle("TOC400")+
+  geom_point(data=cubist_snv_TOC400$model$documentation$ObsPred_test,aes(x=obs,y=pred,col="test"),shape=4)+  
+  scale_color_manual("",
+                     breaks=c("test","Zeitreihe"),
+                     values=c("red4","black"),
+                     labels=c("Testset","Neue Rückstellproben"))+
+  scale_fill_viridis_c(),
+
+### ROC plot ####
+ggplot(OBS_PRED
+         ,aes(x=ROC,y=cubist_snv_ROC_pred))+
+  geom_abline(intercept = 0,slope = 1,linetype="dotted")+
+  geom_hex(binwidth=0.025)+
+  theme_pubr() +
+  xlab("observed")+
+  ylab("predicted")+
+  xlim(c(-.06,.7))+
+  ylim(c(-.06,.7))+
+  ggtitle("ROC")+
+      geom_point(data=cubist_snv_ROC$model$documentation$ObsPred_test,aes(x=obs,y=pred,col="test"),shape=4)+  
+      scale_color_manual("",
+                         breaks=c("test","Zeitreihe"),
+                         values=c("red4","black"),
+                         labels=c("Testset","Neue Rückstellproben"))+
+  scale_fill_viridis_c(),
+ ### TIC900 plot ####
+ggplot(OBS_PRED
+         ,aes(x=TIC900,y=cubist_snv_TIC900_pred))+
+  geom_abline(intercept = 0,slope = 1,linetype="dotted")+
+  geom_hex(binwidth=0.0125)+
+  theme_pubr() +
+  xlab("observed")+
+  ylab("predicted")+
+  xlim(c(-.02,.33))+
+  ylim(c(-.02,.33))+
+  ggtitle("TIC900")+
+      geom_point(data=cubist_snv_TIC900$model$documentation$ObsPred_test,aes(x=obs,y=pred,col="test"),shape=4)+  
+      scale_color_manual("",
+                         breaks=c("test","Zeitreihe"),
+                         values=c("red4","black"),
+                         labels=c("Testset","Neue Rückstellproben"))+
+  scale_fill_viridis_c(),
+  common.legend = T,nrow = 1
+)
+)
+```
+
+```{r}
+
+
+# predict TIC900 with cubist model
+out=BDF_frisch$soliTOC%>%rename(sample_id=Name)
+cubist_snv_log_TIC900=predict_variable(
+  target_data = BDF_frisch,model_folder = paste0(root_dir,"/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models"),
+  prefix = "cubist_",
+  variable_ = "TIC900",
+  fixed_set = "spc_sg_snv_rs4",
+  fixed_trans="log1p")
+
+cubist_snv_none_TIC900=predict_variable(
+  target_data = BDF_frisch,model_folder = paste0(root_dir,"/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models"),
+  prefix = "cubist_",
+  variable_ = "TIC900",
+  fixed_set = "spc_sg_snv_rs4",
+  fixed_trans="none")
+
+out=left_join(out,cubist_snv_log_TIC900$predictions,by="sample_id")
+out=left_join(out,cubist_snv_none_TIC900$predictions,by="sample_id")
+
+
+ggplot(out,aes(x=TIC900))+geom_point(aes(y=pred.x),col="red")+geom_point(aes(y=pred.y),col="blue")+geom_abline(intercept=0,slope=1)
+
+```
+
+# Predict BDFfrisch cubist_snv 
+```{r}
+
+#reload
+{
+  tmp1=read_rds(paste0(root_dir,"/GitHub/R_main/data/datasets/BDF_frisch/BDF_frisch_sub-1"))
+  tmp2=read_rds(paste0(root_dir,"/GitHub/R_main/data/datasets/BDF_frisch/BDF_frisch_sub-2"))
+  tmp3=read_rds(paste0(root_dir,"/GitHub/R_main/data/datasets/BDF_frisch/BDF_frisch_sub-3"))
+  
+  
+  BDF_frisch=rbind(
+    tmp1,
+    tmp2,
+    tmp3
+  )
+  rm(tmp1)
+  rm(tmp2)
+  rm(tmp3)
+}
+
+# init obspred
+OBS_PRED=rename(BDF_frisch$soliTOC,sample_id=Name)%>%select(sample_id,TOC,TC,TOC400,ROC,TIC900)%>%left_join(BDF_frisch$sampling_data)
+
+# predict TC with cubist model
+cubist_snv_TC=predict_variable(target_data = BDF_frisch,
+                               model_folder = paste0(root_dir,"/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models"),
+                               prefix = "cubist_",variable_ = "TC",fixed_set = "spc_sg_snv_rs4")
+# merge results to obspred
+OBS_PRED=left_join(OBS_PRED,
+                   left_join(cubist_snv_TC$predictions%>%rename(cubist_snv_TC_pred=pred),
+                             cubist_snv_TC$spc_diss%>%rename(cubist_snv_TC_mean_diss=mean_diss,
+                                                             cubist_snv_TC_diss_flag=diss_flag)
+                             ,by="sample_id")
+                   ,by="sample_id")
+
+# predict TOC with cubist model
+cubist_snv_TOC=predict_variable(target_data = BDF_frisch,
+                               model_folder = paste0(root_dir,"/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models"),
+                               prefix = "cubist_",variable_ = "TOC",fixed_set = "spc_sg_snv_rs4")
+# merge results
+OBS_PRED=left_join(OBS_PRED,
+                   left_join(cubist_snv_TOC$predictions%>%rename(cubist_snv_TOC_pred=pred),
+                             cubist_snv_TOC$spc_diss%>%rename(cubist_snv_TOC_mean_diss=mean_diss,
+                                                             cubist_snv_TOC_diss_flag=diss_flag)
+                             ,by="sample_id")
+                   ,by="sample_id")
+
+
+# predict TOC400 with cubist model
+cubist_snv_TOC400=predict_variable(target_data = BDF_frisch,
+                               model_folder = paste0(root_dir,"/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models"),
+                               prefix = "cubist_",variable_ = "TOC400",fixed_set = "spc_sg_snv_rs4")
+# merge results to obspred
+OBS_PRED=left_join(OBS_PRED,
+                   left_join(cubist_snv_TOC400$predictions%>%rename(cubist_snv_TOC400_pred=pred),
+                             cubist_snv_TOC400$spc_diss%>%rename(cubist_snv_TOC400_mean_diss=mean_diss,
+                                                             cubist_snv_TOC400_diss_flag=diss_flag)
+                             ,by="sample_id")
+                   ,by="sample_id")
+
+
+# predict ROC with cubist model
+cubist_snv_ROC=predict_variable(target_data = BDF_frisch,
+                               model_folder = paste0(root_dir,"/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models"),
+                               prefix = "cubist_",variable_ = "ROC",fixed_set = "spc_sg_snv_rs4")
+# merge results to obspred
+OBS_PRED=left_join(OBS_PRED,
+                   left_join(cubist_snv_ROC$predictions%>%rename(cubist_snv_ROC_pred=pred),
+                             cubist_snv_ROC$spc_diss%>%rename(cubist_snv_ROC_mean_diss=mean_diss,
+                                                             cubist_snv_ROC_diss_flag=diss_flag)
+                             ,by="sample_id")
+                   ,by="sample_id")
+
+
+# predict TIC900 with cubist model
+cubist_snv_TIC900=predict_variable(target_data = BDF_frisch,
+                               model_folder = paste0(root_dir,"/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models"),
+                               prefix = "cubist_",variable_ = "TIC900",fixed_set = "spc_sg_snv_rs4")
+# merge results to obspred
+OBS_PRED=left_join(OBS_PRED,
+                   left_join(cubist_snv_TIC900$predictions%>%rename(cubist_snv_TIC900_pred=pred),
+                             cubist_snv_TIC900$spc_diss%>%rename(cubist_snv_TIC900_mean_diss=mean_diss,
+                                                             cubist_snv_TIC900_diss_flag=diss_flag)
+                             ,by="sample_id")
+                   ,by="sample_id")
+
+
+
+# load OSSL TC predictions
+OSSL_TC=read_rds("~/GitHub/R_main/R_main/OSSL model output/BDF_frisch/csv/BDF_frisch_log..c.tot_usda.a622_w.pct")
+# merge
+OBS_PRED=left_join(OBS_PRED,
+                   rename(OSSL_TC,
+                          OSSL_TC_pred=c.tot_usda.a622_w.pct,
+                          OSSL_TC_std_dev=std_dev,
+                          OSSL_TC_margin_lower=lower,
+                          OSSL_TC_margin_upper=upper,
+                          OSSL_TC_flag=underrepresented
+                   )
+                   ,by="sample_id")
+
+OSSL_TOC=read_rds("~/GitHub/R_main/R_main/OSSL model output/BDF_frisch/csv/BDF_frisch_log..oc_usda.c729_w.pct")
+# merge
+OBS_PRED=left_join(OBS_PRED,
+                   rename(OSSL_TOC,
+                          OSSL_TOC_pred=oc_usda.c729_w.pct,
+                          OSSL_TOC_std_dev=std_dev,
+                          OSSL_TOC_margin_lower=lower,
+                          OSSL_TOC_margin_upper=upper,
+                          OSSL_TOC_flag=underrepresented
+                   )
+                   ,by="sample_id")
+
+OBS_PRED_frisch=OBS_PRED
+
+frisch_eval=rbind(
+  data.frame(pred_set="BDF_TC",
+             evaluate_model_adjusted(OBS_PRED_frisch,obs = "TC",pred="cubist_snv_TC_pred")),
+  data.frame(pred_set="BDF_TOC",
+             evaluate_model_adjusted(OBS_PRED_frisch,obs = "TOC",pred="cubist_snv_TOC_pred")),
+  data.frame(pred_set="BDF_TOC400",
+             evaluate_model_adjusted(OBS_PRED_frisch,obs = "TOC400",pred="cubist_snv_TOC400_pred")),
+  data.frame(pred_set="BDF_ROC",
+             evaluate_model_adjusted(OBS_PRED_frisch,obs = "ROC",pred="cubist_snv_ROC_pred")),
+  data.frame(pred_set="BDF_TIC900",
+             evaluate_model_adjusted(OBS_PRED_frisch,obs = "TIC900",pred="cubist_snv_TIC900_pred")),
+  data.frame(pred_set="OSSL_TOC",
+             evaluate_model_adjusted(OBS_PRED_frisch,obs = "TOC",pred="OSSL_TOC_pred")),
+  data.frame(pred_set="OSSL_TC",
+             evaluate_model_adjusted(OBS_PRED_frisch,obs = "TC",pred="OSSL_TC_pred")),
+  data.frame(pred_set="BDF<4_TOC",
+             evaluate_model_adjusted(OBS_PRED_frisch%>%filter(TC<4),obs = "TOC",pred="OSSL_TC_pred")),
+  data.frame(pred_set="BDF<4_TC",
+             evaluate_model_adjusted(OBS_PRED_frisch%>%filter(TC<4),obs = "TC",pred="OSSL_TC_pred"))
+  )
+
+
+```
+
+
+
+
+# BDF frisch with test overlay
+```{r}
+
+{
+  svg(paste0(root_dir,"/GitHub/R_main/R_main/temp/BDF_frisch_obs_pred_cubist_withTest.svg"),width = 15,height = 3.5)
+  plot(
+    ggarrange(
+    ### TC plot ####
+      ggplot(OBS_PRED_frisch%>%filter(!is.na(BDF))
+             ,aes(x=TC,y=cubist_snv_TC_pred))+
+      geom_abline(intercept = 0,slope = 1,linetype="dotted")+
+      geom_point(aes(col=BDF),shape=19,alpha=.7)+
+      theme_pubr() +
+      xlab("observed")+
+      ylab("predicted")+
+      xlim(c(0,7.3))+
+      ylim(c(0,7.3))+
+      ggtitle("TC")+
+      geom_point(data=cubist_snv_TC$model$documentation$ObsPred_test,aes(x=obs,y=pred,col="test"),shape=4)+
+      scale_color_manual("",
+                         breaks=c("test","02","23","30","35"),
+                         values=c("red4",colorblind_safe_colors[c(2:4,8)]),
+                         labels=c("Testset","BDF02","BDF23","BDF30","BDF35")),
+    
+    ### TOC plot ####
+      ggplot(OBS_PRED%>%filter(!is.na(BDF))
+             ,aes(x=TOC,y=cubist_snv_TOC_pred))+
+      geom_abline(intercept = 0,slope = 1,linetype="dotted")+
+      geom_point(aes(col=BDF),shape=19,alpha=.7)+
+      theme_pubr() +
+      xlab("observed")+
+      ylab("predicted")+
+      xlim(c(0,7.3))+
+      ylim(c(0,7.3))+
+      ggtitle("TOC")+
+      geom_point(data=cubist_snv_TOC$model$documentation$ObsPred_test,aes(x=obs,y=pred,col="test"),shape=4)+  
+      scale_color_manual("",
+                         breaks=c("test","02","23","30","35"),
+                         values=c("red4",colorblind_safe_colors[c(2:4,8)]),
+                         labels=c("Testset","BDF02","BDF23","BDF30","BDF35")),
+     
+    ### TOC400 plot ####
+      ggplot(OBS_PRED%>%filter(!is.na(BDF))
+             ,aes(x=TOC400,y=cubist_snv_TOC400_pred))+
+      geom_abline(intercept = 0,slope = 1,linetype="dotted")+
+      geom_point(aes(col=BDF),shape=19,alpha=.7)+
+      theme_pubr() +
+      xlab("observed")+
+      ylab("predicted")+
+      xlim(c(-.01,7))+
+      ylim(c(-.01,7))+
+      ggtitle("TOC400")+
+      geom_point(data=cubist_snv_TOC400$model$documentation$ObsPred_test,aes(x=obs,y=pred,col="test"),shape=4)+  
+      scale_color_manual("",
+                         breaks=c("test","02","23","30","35"),
+                         values=c("red4",colorblind_safe_colors[c(2:4,8)]),
+                         labels=c("Testset","BDF02","BDF23","BDF30","BDF35")),
+    
+    ### ROC plot ####
+      ggplot(OBS_PRED%>%filter(!is.na(BDF))
+             ,aes(x=ROC,y=cubist_snv_ROC_pred))+
+      geom_abline(intercept = 0,slope = 1,linetype="dotted")+
+      geom_point(aes(col=BDF),shape=19,alpha=.7)+
+      theme_pubr() +
+      xlab("observed")+
+      ylab("predicted")+
+      xlim(c(-.06,.7))+
+      ylim(c(-.06,.7))+
+      ggtitle("ROC")+
+      geom_point(data=cubist_snv_ROC$model$documentation$ObsPred_test,aes(x=obs,y=pred,col="test"),shape=4)+  
+      scale_color_manual("",
+                         breaks=c("test","02","23","30","35"),
+                         values=c("red4",colorblind_safe_colors[c(2:4,8)]),
+                         labels=c("Testset","BDF02","BDF23","BDF30","BDF35")),
+    
+     ### TIC900 plot ####
+      ggplot(OBS_PRED%>%filter(!is.na(BDF))
+             ,aes(x=TIC900,y=cubist_snv_TIC900_pred))+
+      geom_abline(intercept = 0,slope = 1,linetype="dotted")+
+      geom_point(aes(col=BDF),shape=19,alpha=.7)+
+      theme_pubr() +
+      xlab("observed")+
+      ylab("predicted")+
+      xlim(c(-.02,.33))+
+      ylim(c(-.02,.33))+
+      ggtitle("TIC900")+
+      geom_point(data=cubist_snv_TIC900$model$documentation$ObsPred_test,aes(x=obs,y=pred,col="test"),shape=4)+  
+      scale_color_manual("",
+                         breaks=c("test","02","23","30","35"),
+                         values=c("red4",colorblind_safe_colors[c(2:4,8)]),
+                         labels=c("Testset","BDF02","BDF23","BDF30","BDF35")),
+    common.legend = T,
+    nrow=1
+    )
+  )
+dev.off()
+}
+
+
+```
+
+
+
+
+
+# BDF frisch with test overlay hexbin
+```{r}
+
+{
+  p=plot(
+    ggarrange(
+    ### TC plot ####
+      ggplot(OBS_PRED%>%filter(!is.na(BDF))
+             ,aes(x=TC,y=cubist_snv_TC_pred))+
+      geom_abline(intercept = 0,slope = 1,linetype="dotted")+
+  geom_hex(binwidth=0.25)+
+      theme_pubr() +
+      xlab("observed")+
+      ylab("predicted")+
+      xlim(c(0,7.3))+
+      ylim(c(0,7.3))+
+      ggtitle("TC")+
+      geom_point(data=cubist_snv_TC$model$documentation$ObsPred_test,aes(x=obs,y=pred,col="test"),shape=4,
+                 size=.5,alpha=.25)+  
+      scale_color_manual("",
+                         breaks=c("test","02","23","30","35"),
+                         values=c("red",colorblind_safe_colors[c(2:4,8)]),
+                         labels=c("Testset","BDF02","BDF23","BDF30","BDF35"))+
+    scale_fill_viridis_c(),
+    
+    ### TOC plot ####
+      ggplot(OBS_PRED%>%filter(!is.na(BDF))
+             ,aes(x=TOC,y=cubist_snv_TOC_pred))+
+      geom_abline(intercept = 0,slope = 1,linetype="dotted")+
+  geom_hex(binwidth=0.25)+
+      theme_pubr() +
+      xlab("observed")+
+      ylab("predicted")+
+      xlim(c(0,7.3))+
+      ylim(c(0,7.3))+
+      ggtitle("TOC")+
+      geom_point(data=cubist_snv_TOC$model$documentation$ObsPred_test,aes(x=obs,y=pred,col="test"),shape=4,
+                 size=.5,alpha=.25)+  
+      scale_color_manual("",
+                         breaks=c("test","02","23","30","35"),
+                         values=c("red",colorblind_safe_colors[c(2:4,8)]),
+                         labels=c("Testset","BDF02","BDF23","BDF30","BDF35"))+
+    scale_fill_viridis_c(),
+     
+    ### TOC400 plot ####
+      ggplot(OBS_PRED%>%filter(!is.na(BDF))
+             ,aes(x=TOC400,y=cubist_snv_TOC400_pred))+
+      geom_abline(intercept = 0,slope = 1,linetype="dotted")+
+  geom_hex(binwidth=0.25)+
+      theme_pubr() +
+      xlab("observed")+
+      ylab("predicted")+
+      xlim(c(-.01,7))+
+      ylim(c(-.01,7))+
+      ggtitle("TOC400")+
+      geom_point(data=cubist_snv_TOC400$model$documentation$ObsPred_test,aes(x=obs,y=pred,col="test"),shape=4,
+                 size=.5,alpha=.25)+  
+      scale_color_manual("",
+                         breaks=c("test","02","23","30","35"),
+                         values=c("red",colorblind_safe_colors[c(2:4,8)]),
+                         labels=c("Testset","BDF02","BDF23","BDF30","BDF35"))+
+    scale_fill_viridis_c(),
+    
+    ### ROC plot ####
+      ggplot(OBS_PRED%>%filter(!is.na(BDF))
+             ,aes(x=ROC,y=cubist_snv_ROC_pred))+
+      geom_abline(intercept = 0,slope = 1,linetype="dotted")+
+  geom_hex(binwidth=0.025)+
+      theme_pubr() +
+      xlab("observed")+
+      ylab("predicted")+
+      xlim(c(-.06,.7))+
+      ylim(c(-.06,.7))+
+      ggtitle("ROC")+
+      geom_point(data=cubist_snv_ROC$model$documentation$ObsPred_test,aes(x=obs,y=pred,col="test"),shape=4,
+                 size=.5,alpha=.25)+  
+      scale_color_manual("",
+                         breaks=c("test","02","23","30","35"),
+                         values=c("red",colorblind_safe_colors[c(2:4,8)]),
+                         labels=c("Testset","BDF02","BDF23","BDF30","BDF35"))+
+    scale_fill_viridis_c(),
+    
+     ### TIC900 plot ####
+      ggplot(OBS_PRED%>%filter(!is.na(BDF))
+             ,aes(x=TIC900,y=cubist_snv_TIC900_pred))+
+      geom_abline(intercept = 0,slope = 1,linetype="dotted")+
+  geom_hex(binwidth=0.0125)+
+      theme_pubr() +
+      xlab("observed")+
+      ylab("predicted")+
+      xlim(c(-.02,.33))+
+      ylim(c(-.02,.33))+
+      ggtitle("TIC900")+
+      geom_point(data=cubist_snv_TIC900$model$documentation$ObsPred_test,aes(x=obs,y=pred,col="test"),shape=4,
+                 size=.5,alpha=.25)+  
+      scale_color_manual("",
+                         breaks=c("test","02","23","30","35"),
+                         values=c("red",colorblind_safe_colors[c(2:4,8)]),
+                         labels=c("Testset","BDF02","BDF23","BDF30","BDF35"))+
+    scale_fill_viridis_c(),
+    common.legend = T,
+    nrow=1
+    )
+  )
+  
+  svg(paste0(root_dir,"/GitHub/R_main/R_main/temp/BDF_frisch_obs_pred_cubist_withTest_hex.svg"),width = 15,height = 3.5)
+  p
+dev.off()
+
+  png(paste0(root_dir,"/GitHub/R_main/R_main/temp/BDF_frisch_obs_pred_cubist_withTest_hex.png"),width = 1500,height = 350)
+  p
+dev.off()
+
+
+
+}
+
+
+```
+
+# OSSL vs BDF
+```{r}
+ plot(
+    ggarrange(
+    ### TC plot ####
+      ggplot(OBS_PRED%>%filter(!is.na(BDF))
+             ,aes(x=TC,y=cubist_snv_TC_pred))+
+      geom_abline(intercept = 0,slope = 1,linetype="dotted")+
+      geom_point(aes(col=BDF),shape=19,alpha=.7)+
+      theme_pubr() +
+      xlab("observed")+
+      ylab("predicted")+
+      xlim(c(0,7.3))+
+      ylim(c(0,7.3))+
+      ggtitle("OSSL TC")+
+      geom_point(data=cubist_snv_TC$model$documentation$ObsPred_test,aes(x=obs,y=pred,col="test"),shape=4)+
+      scale_color_manual("",
+                         breaks=c("test","02","23","30","35"),
+                         values=c("red4",colorblind_safe_colors[c(2:4,8)]),
+                         labels=c("Testset","BDF02","BDF23","BDF30","BDF35")),
+    
+    ### TOC plot ####
+      ggplot(OBS_PRED%>%filter(!is.na(BDF))
+             ,aes(x=TOC,y=cubist_snv_TOC_pred))+
+      geom_abline(intercept = 0,slope = 1,linetype="dotted")+
+      geom_point(aes(col=BDF),shape=19,alpha=.7)+
+      theme_pubr() +
+      xlab("observed")+
+      ylab("predicted")+
+      xlim(c(0,7.3))+
+      ylim(c(0,7.3))+
+      ggtitle("OSSL TOC")+
+      geom_point(data=cubist_snv_TOC$model$documentation$ObsPred_test,aes(x=obs,y=pred,col="test"),shape=4)+  
+      scale_color_manual("",
+                         breaks=c("test","02","23","30","35"),
+                         values=c("red4",colorblind_safe_colors[c(2:4,8)]),
+                         labels=c("Testset","BDF02","BDF23","BDF30","BDF35")),
+     
+    ### TC plot ####
+      ggplot(OBS_PRED%>%filter(!is.na(BDF))
+             ,aes(x=TC,y=OSSL_TC_pred))+
+      geom_abline(intercept = 0,slope = 1,linetype="dotted")+
+      geom_point(aes(col=BDF),shape=19,alpha=.7)+
+      theme_pubr() +
+      xlab("observed")+
+      ylab("predicted")+
+      xlim(c(0,7.3))+
+      ylim(c(0,7.3))+
+      ggtitle("OSSL TC")+
+      geom_point(data=cubist_snv_TC$model$documentation$ObsPred_test,aes(x=obs,y=pred,col="test"),shape=4)+
+      scale_color_manual("",
+                         breaks=c("test","02","23","30","35"),
+                         values=c("red4",colorblind_safe_colors[c(2:4,8)]),
+                         labels=c("Testset","BDF02","BDF23","BDF30","BDF35")),
+    
+    ### TOC plot ####
+      ggplot(OBS_PRED%>%filter(!is.na(BDF))
+             ,aes(x=TOC,y=OSSL_TOC_pred))+
+      geom_abline(intercept = 0,slope = 1,linetype="dotted")+
+      geom_point(aes(col=BDF),shape=19,alpha=.7)+
+      theme_pubr() +
+      xlab("observed")+
+      ylab("predicted")+
+      xlim(c(0,7.3))+
+      ylim(c(0,7.3))+
+      ggtitle("OSSL TOC")+
+      geom_point(data=cubist_snv_TOC$model$documentation$ObsPred_test,aes(x=obs,y=pred,col="test"),shape=4)+  
+      scale_color_manual("",
+                         breaks=c("test","02","23","30","35"),
+                         values=c("red4",colorblind_safe_colors[c(2:4,8)]),
+                         labels=c("Testset","BDF02","BDF23","BDF30","BDF35")),
+    common.legend = T,
+    nrow=2,ncol=2
+    )
+ 
+ )
+
+
+
+frisch_eval=rbind(
+  data.frame(pred_set="BDF_TC",
+             evaluate_model_adjusted(OBS_PRED,obs = "TC",pred="cubist_snv_TC_pred")),
+  data.frame(pred_set="BDF_TOC",
+             evaluate_model_adjusted(OBS_PRED,obs = "TOC",pred="cubist_snv_TOC_pred")),
+  data.frame(pred_set="OSSL_TOC",
+             evaluate_model_adjusted(OBS_PRED,obs = "TOC",pred="OSSL_TOC_pred")),
+  data.frame(pred_set="OSSL_TC",
+             evaluate_model_adjusted(OBS_PRED,obs = "TC",pred="OSSL_TC_pred")),
+  data.frame(pred_set="BDF<2.5_TOC",
+             evaluate_model_adjusted(OBS_PRED%>%filter(TOC<2.5),obs = "TOC",pred="cubist_snv_TC_pred")),
+  data.frame(pred_set="BDF<2.5_TC",
+             evaluate_model_adjusted(OBS_PRED%>%filter(TC<2.5),obs = "TC",pred="cubist_snv_TC_pred")),
+  data.frame(pred_set="OSSL<2.5_TOC",
+             evaluate_model_adjusted(OBS_PRED%>%filter(TOC<2.5),obs = "TOC",pred="OSSL_TOC_pred")),
+  data.frame(pred_set="OSSL<2.5_TC",
+             evaluate_model_adjusted(OBS_PRED%>%filter(TC<2.5),obs = "TC",pred="OSSL_TC_pred"))
+  )
+
+
+# low c
+ALPHA=.25
+{
+svg(paste0(root_dir,"/GitHub/R_main/R_main/temp/BDF_frisch_obs_pred_OSSLvsBDF.svg"),width = 8,height = 8)
+plot(
+    ggarrange(
+    ### TC plot ####
+    ggplot(OBS_PRED%>%filter(!is.na(BDF)&TC<2.5),
+           aes(x=TC))+
+      geom_abline(intercept = 0,slope = 1,linetype="dotted")+
+      geom_point(aes(col="BDF",y=cubist_snv_TC_pred),shape=19,alpha=ALPHA)+
+     # geom_smooth(method="glm",aes(col="BDF",y=cubist_snv_TC_pred),se=F)+
+      geom_point(aes(col="OSSL",y=OSSL_TC_pred),shape=19,alpha=ALPHA)+
+     # geom_smooth(method="glm",aes(col="OSSL",y=OSSL_TC_pred),se=F)+
+      theme_pubr() +
+      xlab("observed")+
+      ylab("predicted")+
+      xlim(c(0,3))+
+      ylim(c(0,3))+
+      ggtitle("TC < 2.5")+
+      scale_color_manual("",
+                         breaks=c("BDF","OSSL"),
+                         values=c(colorblind_safe_colors[c(7,4)])),
+    ### TOC plot ####
+      ggplot(OBS_PRED%>%filter(!is.na(BDF)&TOC<2.5),
+             aes(x=TOC))+
+      geom_abline(intercept = 0,slope = 1,linetype="dotted")+
+      geom_point(aes(col="BDF",y=cubist_snv_TOC_pred),shape=19,alpha=ALPHA)+
+      geom_point(aes(col="OSSL",y=OSSL_TOC_pred),shape=19,alpha=ALPHA)+
+      theme_pubr() +
+      xlab("observed")+
+      ylab("predicted")+
+      xlim(c(0,3))+
+      ylim(c(0,3))+
+      ggtitle("TOC < 2.5")+
+      scale_color_manual("",
+                         breaks=c("BDF","OSSL"),
+                         values=c(colorblind_safe_colors[c(7,4)])),
+    ### TC plot ####
+    ggplot(OBS_PRED%>%filter(!is.na(BDF)),
+           aes(x=TC))+
+      geom_abline(intercept = 0,slope = 1,linetype="dotted")+
+      geom_point(aes(col="BDF",y=cubist_snv_TC_pred),shape=19,alpha=ALPHA)+
+     # geom_smooth(method="glm",aes(col="BDF",y=cubist_snv_TC_pred),se=F)+
+      geom_point(aes(col="OSSL",y=OSSL_TC_pred),shape=19,alpha=ALPHA)+
+     # geom_smooth(method="glm",aes(col="OSSL",y=OSSL_TC_pred),se=F)+
+      theme_pubr() +
+      xlab("observed")+
+      ylab("predicted")+
+      xlim(c(0,7))+
+      ylim(c(0,7))+
+      ggtitle("TC")+
+      scale_color_manual("",
+                         breaks=c("BDF","OSSL"),
+                         values=c(colorblind_safe_colors[c(7,4)])),
+    ### TOC plot ####
+      ggplot(OBS_PRED%>%filter(!is.na(BDF)),
+             aes(x=TOC))+
+      geom_abline(intercept = 0,slope = 1,linetype="dotted")+
+      geom_point(aes(col="BDF",y=cubist_snv_TOC_pred),shape=19,alpha=ALPHA)+
+      geom_point(aes(col="OSSL",y=OSSL_TOC_pred),shape=19,alpha=ALPHA)+
+      theme_pubr() +
+      xlab("observed")+
+      ylab("predicted")+
+      xlim(c(0,7))+
+      ylim(c(0,7))+
+      ggtitle("TOC")+
+      scale_color_manual("",
+                         breaks=c("BDF","OSSL"),
+                         values=c(colorblind_safe_colors[c(7,4)])),
+common.legend=T,nrow=2,ncol=2
+)
+)
+
+dev.off()
+}
+
+
+```
+# TRD OSSL frisch 
+```{r}
+# interactive ####
+ggplotly(
+  BDF_frisch$TRD%>%left_join(OSSL_BDF_frisch_pred$log..bd_usda.a4_g.cm3)%>%filter(sample_id%>%substr(2,2)%in%c("R","Q","P")&Tiefe_von>=0) %>%
+    ggplot(
+      aes(
+        x=(Tiefe_bis+Tiefe_von)/2,
+        y=Atro_density_all,linetype=Typ,alpha=Typ))+
+    #manual gridlines
+    geom_hline(yintercept = seq(.6,2.8,.1),col="grey15",linewidth=.025)+
+    geom_vline(xintercept = seq(0,150,10),col="grey15",linewidth=.025)+
+    geom_vline(xintercept = 0,linewidth=.2,col="black")+
+
+
+    geom_line(aes(group=paste(BDF,Position,Typ)),col="black",linewidth=.1)+
+    geom_smooth(se=F,linewidth=.75,col="black")+
+    geom_line(data = filter(Lagerungsdichte_Referenz,Tiefe<100),
+              aes(x=Tiefe,
+                  y=TRD,
+                  linetype="BDF-Referenz",
+                  alpha="BDF-Referenz"),
+                  col="red3",
+              linewidth=1
+             )+
+    geom_errorbar(data = TRD_neu,
+    aes(
+      x=Tiefe_avg,
+      y=`TRD`,
+      ymin=minTRD,
+      ymax=maxTRD,
+      width=.1,#`Tiefe bis`-`Tiefe von`,
+      linetype="neu",
+      alpha="neu"
+    ),
+    col="red",
+    linewidth=1
+    )+
+     geom_line(aes(y=bd_usda.a4_g.cm3,group=paste(BDF,Position,Typ)),col="green4",linewidth=.1)+
+    geom_smooth(aes(y=bd_usda.a4_g.cm3),se=F,linewidth=.75,col="green4")+
+    coord_flip()+
+    scale_x_reverse("Tiefe [cm]",breaks=seq(0,150,50),minor_breaks=seq(0,150,10))+
+    #scale_color_manual(breaks=c("02","23","30","35"),values=colorblind_safe_colors[c(2:4,8)],labels=paste("BDF",c("02","23","30","35")))+
+    scale_linetype_manual("",breaks=c("neu","BDF-Referenz","Profilspaten","Quicksampler","Rammkern"),values=c("solid","solid","dotdash","dashed","dotted"),labels=c("Referenz neu","Referenz","PS","QS","RK"))+
+    scale_alpha_manual("",breaks=c("neu","BDF-Referenz","Profilspaten","Quicksampler","Rammkern"),values=c(.5,1,1,1,1),labels=c("Referenz neu","Referenz","PS","QS","RK"))+
+   # scale_color_manual("",breaks=c("02","23","30","35"),values = colorblind_safe_colors[c(2:4,8)],labels=c("BDF02","BDF23","BDF30","BDF35"))+
+    ylab("TRD [g/cm³]")+
+    theme_pubr()+
+    theme(legend.box="vertical",
+          #legend.position = "top"
+          #panel.grid = element_line(colour = "grey"),
+          #panel.grid.major = element_line(colour = "grey",linewidth = 1),
+          #panel.grid.minor = element_line(colour = "grey",linewidth = 1,linetype = "solid")
+          )+
+  facet_wrap(facets = vars(BDF),labeller = BDF_labeller,scales = "free",nrow = 1)#function(x){paste("BDF",x)})
+)%>%layout(legend=list(x=0,
+                       y=-.20,
+                       xanchor='left',
+                       yanchor='bottom',
+                       orientation='h'))
+
+
+
+
+BDF_frisch$TRD%>%left_join(OSSL_BDF_frisch_pred$log..bd_usda.a4_g.cm3)%>%filter(sample_id%>%substr(2,2)%in%c("R","Q")&Tiefe_von>=0)%>%evaluate_model_adjusted(obs=Atro_density_all,pred=bd_usda.a4_g.cm3)%>%View() 
+
+BDF_frisch$TRD%>%left_join(OSSL_BDF_frisch_pred$log..bd_usda.a4_g.cm3)%>%filter(sample_id%>%substr(2,2)%in%c("R","Q")&Tiefe_von>=0)->BDFFRISCH_OSSLTRD
+
+lm(data=BDFFRISCH_OSSLTRD,formula = bd_usda.a4_g.cm3~Atro_density_all)
+
+
+svg("~/GitHub/R_main/R_main/temp/OSSL_BDFfrisch_TRD.svg",width = 5,height = 5)
+BDF_frisch$TRD%>%left_join(OSSL_BDF_frisch_pred$log..bd_usda.a4_g.cm3)%>%filter(sample_id%>%substr(2,2)%in%c("R","Q")&Tiefe_von>=0)%>%
+  ggplot(aes(x=Atro_density_all,y=bd_usda.a4_g.cm3))+
+  geom_point(data=all_BDF_TRD,aes(x=avg,y=bd_usda.a4_g.cm3),col="red4")+
+  geom_smooth(data=all_BDF_TRD,aes(x=avg,y=bd_usda.a4_g.cm3),col="red4",method="glm",se=F,linewidth=.5)+#reconstructed from BDF database (see below)
+  geom_point(shape=1)+geom_abline(intercept = 0,slope = 1)+
+  geom_smooth(method="glm",se=F,linewidth=.5)+
+  xlim(c(0,2))+
+  ylim(c(0,2))+
+  xlab(expression("Gemessene TRD (RK+QS Daten / BDF dB) [g c"*m^-3*"]"))+
+  ylab(expression("Vorhersage bulk density USDA [g c"*m^-3*"]"))+
+  theme_pubr()
+dev.off()
+```
+#load and merge BDF data
+```{r}
+
+BDF_complete <- read_csv("~/GitHub/BDF_Auswahl_Zeitreihe/BDF_complete.csv")
+
+BDF_complete%>%filter(EntnahmeArt=="VZ")%>%group_by(Projekt,SchichtID,PDATUM,Utief)%>%summarise(Min=min(dB,na.rm = T),Max=max(dB,na.rm = T),avg=mean(dB,na.rm = T),n=length(dB%>%na.omit))->VZ_summary
+
+
+ggplot(VZ_summary%>%filter(Projekt%in%BDF_Zeitreihe_ID$Projekt),aes(x=Utief,y=avg,col=year(PDATUM),group=year(PDATUM)))+geom_point()+geom_line()+geom_ribbon(aes(ymin=Min,ymax=Max,fill=year(PDATUM)),alpha=.1,linetype="blank")+geom_point()+scale_x_reverse()+coord_flip()+
+  #theme(legend.position="none")+
+  facet_wrap(facets=vars(Projekt),nrow=4)
+
+# !!!!!!!!!!!!!!!!!!!
+# Only compare BDF that are available for diffferent seasons, otherwise bias possible
+# !!!!!!!!!!!!!!!!!!!!!
+BDF_complete%>%filter(EntnahmeArt=="VZ")%>%group_by(Projekt,SchichtID,PDATUM=month(PDATUM),Utief)%>%summarise(Min=min(dB,na.rm = T),Max=max(dB,na.rm = T),avg=mean(dB,na.rm = T),n=length(dB%>%na.omit))%>%
+  mutate(PDATUM=case_match(PDATUM,
+                           12~"wi",
+                           1~"wi",
+                           2~"wi",
+                           3~"sp",
+                           4~"sp",
+                           5~"sp",
+                           6~"su",
+                           7~"su",
+                           8~"su",
+                           9~"au",
+                           10~"au",
+                           11~"au"))->VZ_summary_monthly
+
+ggplot(VZ_summary_monthly%>%filter(Projekt%in%BDF_Zeitreihe_ID$Projekt)%>%group_by(Projekt,PDATUM,Utief)%>%summarise(avg=mean(avg),Min=min(Min),Max=max(Max)),aes(x=Utief,y=avg,col=PDATUM,group=PDATUM))+geom_point()+geom_line()+geom_ribbon(aes(ymin=Min,ymax=Max,fill=PDATUM),alpha=.1,linetype="blank")+geom_point()+scale_x_reverse()+coord_flip()+geom_smooth(span=5,se=F)+
+  #theme(legend.position="none")+
+  facet_wrap(facets=vars(Projekt),nrow=4)
+
+
+ ggplot(VZ_summary_monthly%>%filter(Projekt%in%BDF_Zeitreihe_ID$Projekt)%>%group_by(PDATUM)%>%summarise(avg=mean(avg),Min=min(Min),Max=max(Max)),aes(x=PDATUM,y=avg,fill=PDATUM))+geom_col()#+geom_ribbon(aes(ymin=Min,ymax=Max,fill=PDATUM),alpha=.1,linetype="blank")+geom_point()+scale_x_reverse()+coord_flip()+geom_smooth(span=5,se=F)#+
+  #theme(legend.position="none"
+  
+  
+{
+tmp1=read_rds("~/GitHub/BDF/BDF-SSL/4_datasets/Adam-2023_BDF_main_sub-1")
+tmp2=read_rds("~/GitHub/BDF/BDF-SSL/4_datasets/Adam-2023_BDF_main_sub-2")
+
+BDF_main=rbind(tmp1,tmp2)
+
+rm(tmp1)
+rm(tmp2)
+}
+
+
+
+BDF_Zeitreihe_ID <- read_csv("~/GitHub/BDF_Auswahl_Zeitreihe/Final/BDF_Zeitreihe_ID.csv")
+
+left_join(BDF_Zeitreihe_ID,VZ_summary,by=c("SchichtID","PDATUM"))%>%left_join(BDF_complete)->BDF_Zeitreihe_full_data
+
+BDF_main$BDF_database=left_join(BDF_main$BDF_database,VZ_summary)
+
+
+
+OSSL_Zeitreihe_pred=read_rds("~/GitHub/R_main/R_main/OSSL model output/BDF_Zeitreihe/csv/BDF_Zeitreihe_all_csv")
+
+Zeitreihe_TRD_pred=left_join(BDF_Zeitreihe_full_data,OSSL_Zeitreihe_pred$log..bd_usda.a4_g.cm3,by=c("Lab_ID"="sample_id"))
+
+
+ggplot()+geom_point(data=Zeitreihe_TRD_pred,aes(x=avg,y=bd_usda.a4_g.cm3))+geom_abline(intercept = 0,slope = 1)
+
+
+
+OSSL_main_pred=read_rds("~/GitHub/R_main/R_main/OSSL model output/BDF_main/csv/BDF_main_all_csv")
+
+Main_TRD_pred=left_join(tibble(sample_id=BDF_main$sample_id,BDF_main$BDF_database),OSSL_main_pred$log..bd_usda.a4_g.cm3)
+
+
+
+ggplot()+geom_point(data=Main_TRD_pred,aes(x=avg,y=bd_usda.a4_g.cm3))+geom_abline(intercept = 0,slope = 1)
+
+
+all_BDF_TRD=rbind(
+  Main_TRD_pred%>%select(sample_id,avg,bd_usda.a4_g.cm3),
+  Zeitreihe_TRD_pred%>%select(Lab_ID,avg,bd_usda.a4_g.cm3)%>%rename(sample_id=Lab_ID)
+)
+
+
+
+
+
+```

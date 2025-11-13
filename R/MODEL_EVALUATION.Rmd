@@ -1,0 +1,2001 @@
+---
+title: "BDF main Model evaluation"
+output: html_notebook
+---
+
+#load
+```{r message=FALSE, warning=FALSE, r,echo=FALSE}
+# set root directory path
+# So script can easily be used on different devices. But does not change working directory for project
+#### change to your path !!!
+root_dir="C:/Users/adam/Documents"
+####
+
+
+source(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/packages.R"))
+if(F){#legacy
+  get_best=function(best_model_eval,
+                    prefix="cubist_",
+                    variable_="CORG"){
+    out=best_model_eval%>%filter(variable==variable_)%>%
+           transmute(out=paste0(prefix,set,"-",trans,"-",variable))%>%pull(out)
+  return(out)
+  }
+}
+source(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/model handlR.R"))
+
+```
+# Function for evaluation if spc preprocessing
+```{r}
+pre_process_eval=function(evaluation,metric,fill_var=NA,fill_vals,dodge){
+  if(is.na(fill_var)){
+  if(any(str_detect(names(evaluation),"model"))){
+    print(1)
+     ((left_join(evaluation,
+            (evaluation%>%group_by(variable)%>%
+               summarise(mean_metric=mean(.data[[metric]]))),by="variable")%>%
+    mutate(rel_metric=.data[[metric]]/mean_metric))[,c("model","set","trans","variable","mean_metric","rel_metric" )])%>% # pulls 
+  ggplot(aes(x=paste(model,set),y=rel_metric))+
+  geom_hline(yintercept = 1)+
+  geom_boxplot()+
+  stat_summary(fun=mean,geom="point",shape=4,size=2)+
+  #scale_y_log10()+
+  theme_pubr()
+  }else{
+    print(2)
+  ((left_join(evaluation,
+            (evaluation%>%group_by(variable)%>%
+               summarise(mean_metric=mean(.data[[metric]]))),by="variable")%>%
+    mutate(rel_metric=.data[[metric]]/mean_metric))[,c("set","trans","variable","mean_metric","rel_metric" )])%>% # pulls 
+  ggplot(aes(x=set,y=rel_metric))+
+  geom_hline(yintercept = 1)+
+  geom_boxplot()+
+  stat_summary(fun=mean,geom="point",shape=4,size=2)+
+  #scale_y_log10()+
+  theme_pubr()
+  }
+  }else{
+            fill_breaks=unique(evaluation[[fill_var]])
+            print(fill_breaks)
+      if(any(str_detect(names(evaluation),"model"))){
+        print(3)
+        
+     ((left_join(evaluation,
+            (evaluation%>%group_by(variable)%>%
+               summarise(mean_metric=mean(.data[[metric]]))),by="variable")%>%
+    mutate(rel_metric=.data[[metric]]/mean_metric))[,c("model","set","trans","variable","mean_metric","rel_metric" )])->dataset
+  dataset$fill=dataset[[fill_var]]      
+  print(dataset)
+  ggplot(data=dataset,aes(x=set,group=paste(model,set),y=rel_metric))+
+  geom_hline(yintercept = 1)+
+  geom_boxplot(aes(fill=fill),alpha=.5)+
+  stat_summary(fun=mean,geom="point",shape=4,size=2,position=position_dodge(dodge))+
+  scale_fill_manual(breaks=fill_breaks,values = fill_vals)+
+  #scale_y_log10()+
+  theme_pubr()
+  }else{
+    print(4)
+  ((left_join(evaluation,
+            (evaluation%>%group_by(variable)%>%
+               summarise(mean_metric=mean(.data[[metric]]))),by="variable")%>%
+    mutate(rel_metric=.data[[metric]]/mean_metric))[,c("set","trans","variable","mean_metric","rel_metric" )])->dataset
+  dataset$fill=dataset[[fill_var]]      
+  ggplot(data=dataset,aes(x=set,y=rel_metric))+
+  geom_hline(yintercept = 1)+
+  geom_boxplot(aes(fill=fill),alpha=.5)+
+  stat_summary(fun=mean,geom="point",shape=4,size=2)+
+  scale_fill_manual(breaks=fill_breaks,values = fill_vals)+
+  #scale_y_log10()+
+  theme_pubr()
+  }
+  }
+  }
+```
+
+
+
+### Sample selection from BDF retentiion pool 
+
+```{r}
+
+BDF_complete <- read_csv(paste0(root_dir,"/GitHub/BDF/BDF-SSL/5_Provided_BDF-Database/LfULG-UBoden-Export-BDF_complete.csv"))
+{
+  tmp1 = read_rds(paste0(root_dir,"/GitHub/BDF/BDF-SSL/4_datasets/Adam-2023_BDF_main_sub-1"))
+  tmp2 = read_rds(paste0(root_dir,"/GitHub/BDF/BDF-SSL/4_datasets/Adam-2023_BDF_main_sub-2"))
+  
+  BDF_main=rbind(
+    tmp1,
+    tmp2
+    )
+  rm(tmp1)
+  rm(tmp2)
+}
+
+
+
+## DENSITY + BOXPLOT GRID for all cubist vars INDIVIDUAL ####
+var_list=c("T","U","S","CORG")
+
+{
+ 
+  #loop for pulling data
+plot_data=c()
+for (i in var_list){
+ 
+  plot_data=bind_rows(
+    plot_data,
+
+    bind_rows(
+      tibble(variable=i,set="all",value=na.omit(BDF_complete[[i]])),
+      tibble(variable=i,set="sel",value=na.omit(BDF_main$BDF_database[[i]]))
+    )
+  )
+}
+
+# summary statistics  
+  stat_data<-plot_data%>%group_by(set,variable)%>%
+    summarise(Min=min(value,na.rm=T),
+              Max=max(value,na.rm=T),
+              Mean=mean(value,na.rm=T),
+              Median=median(value,na.rm=T),
+              n=length(na.omit(value)))%>%
+    mutate(x=plot_data%>%
+             group_by(variable)%>%
+             summarise(x=max(value,na.rm = T))%>%
+             pull(x)*2,
+           y=if_else(set=="all",2,.25))
+  
+  
+  
+  # loop
+  density_plotlist=c()
+  for (i in var_list){
+    density_plotlist[[i]]=(
+      plot_data%>%filter(variable==i)%>%
+      ggplot(aes(alpha=set)) +
+      
+      # horizontal boxplots & density plots
+      
+      stat_density(aes(x = value,
+                       y = after_stat(scaled),
+                       fill = set
+      ),
+      color="black",
+      ) +
+      geom_boxplot(aes(x = value,y=ifelse(set=="all",-.15,-.4),fill=set),width=.2) +
+      geom_text(data=filter(stat_data,variable==i),
+                lineheight=.65,
+                size=3.5,
+                aes(x=x*.75,
+                    y=y,
+                   # alpha=set,
+                    label=paste0("n=",n,
+                                 " mean=",format(Mean,nsmall=0,digits=2),
+                                 "\nmin=",format(Min,nsmall=0,digits=2),
+                                 " max=",format(Max,nsmall=0,digits=2))),
+                hjust="inward",
+                vjust="inward")+
+      #stat_summary(aes(group=set),geom = "text",fun.data = summary_fun,na.rm = T)+
+      #geom_text(aes(x=alpha=set,label=set))+
+      ggtitle(i)+
+     
+      scale_fill_manual("Set",breaks=c("all","sel"),values = colorblind_safe_colors[c(2,3)] #gg_color_hue(length(var_list))
+                          )+
+      scale_alpha_manual("Set",
+                         breaks=c("all","sel"),
+                         values = c(.75,.25),
+                         labels=c("Sample Pool","Selected"))+
+      theme_pubr()+
+      theme(legend.direction = "horizontal",legend.position = "bottom", # when using all main vars, put legend in the empty bot-right spot
+            axis.title.y = element_blank(),
+            axis.text.y = element_blank(),
+            axis.ticks.y = element_blank(),
+            axis.title.x = element_blank(),
+            axis.text.x = element_text(size=10)
+      )
+    )
+  }
+}
+# save as object
+saveRDS(density_plotlist,paste0(root_dir,
+               "/GitHub/BDF/BDF-SSL/3_r_scripts/temp/",
+               "BDF_sample_selection_density"))
+
+# plot selection
+svg(paste0(root_dir, "/GitHub/BDF/BDF-SSL/3_r_scripts/temp/",
+           "BDF_sample_selection_density.svg"),
+        width=3,height=5*4/3)
+ggarrange(plotlist = density_plotlist[c(
+  "S","U","T","CORG")],ncol=1,common.legend = T,legend="none")
+dev.off()
+
+#corg only
+svg(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/",
+           "BDF_sample_selection_density_CORG.svg"),
+        width=4,height=2)
+ggarrange(
+density_plotlist[[
+  "CORG"]],common.legend = T,legend="none")
+dev.off()
+
+svg(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/",
+           "BDF_sample_selection_density.svg"),
+        height=7/4,width=3*4)
+ggarrange(plotlist = density_plotlist[c(
+  "S","U","T","CORG")],nrow=1,common.legend = T,legend="none")
+dev.off()
+
+```
+### EDA of recorded spectra
+
+
+#### Plotting spectra overview
+```{r}
+# subgroups ####
+  BDF_main_TOP=filter(BDF_main,BDF_database$untere.Probentiefe<=.3)
+  BDF_main_MID=filter(BDF_main,BDF_database$untere.Probentiefe>.3&BDF_database$untere.Probentiefe<=.6)
+  BDF_main_SUB=filter(BDF_main,BDF_database$untere.Probentiefe>.6)
+  
+  TOP_plot_data=bind_cols(sample_id=BDF_main_TOP$sample_id,BDF_main_TOP$spc_sg_bl_rs4)%>%
+    pivot_longer(cols=colnames(BDF_main_TOP$spc_sg_bl_rs4),names_transform = as.numeric)#%>%
+  MID_plot_data=bind_cols(sample_id=BDF_main_MID$sample_id,BDF_main_MID$spc_sg_bl_rs4)%>%
+    pivot_longer(cols=colnames(BDF_main_MID$spc_sg_bl_rs4),names_transform = as.numeric)#%>%
+  SUB_plot_data=bind_cols(sample_id=BDF_main_SUB$sample_id,BDF_main_SUB$spc_sg_bl_rs4)%>%
+    pivot_longer(cols=colnames(BDF_main_SUB$spc_sg_bl_rs4),names_transform = as.numeric)#%>%
+  
+  source(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/rel_wn_plot.R"))
+  plt=rel_wn_plot()
+  
+  # filter(sample_id%>%str_detect("LAA"))
+  {
+    plt+
+      geom_line(data=TOP_plot_data,
+                aes(x=as.numeric(name),y=value,group=sample_id,col="0-30"),
+                alpha=.02)+
+      geom_line(data=tibble(sample_id="MEAN",TOP_plot_data[-1]%>%group_by(name)%>%summarise_all(mean)),
+                aes(x=as.numeric(name),y=value,col="0-30"))+
+      geom_line(data=MID_plot_data,
+                aes(x=as.numeric(name),y=value,group=sample_id,col="30-60"),
+                alpha=.02)+
+      geom_line(data=tibble(sample_id="MEAN",MID_plot_data[-1]%>%group_by(name)%>%summarise_all(mean)),
+                aes(x=as.numeric(name),y=value,col="30-60"))+
+      geom_line(data=SUB_plot_data,
+                aes(x=as.numeric(name),y=value,group=sample_id,col="60-100"),
+                alpha=.02)+
+      geom_line(data=tibble(sample_id="MEAN",SUB_plot_data[-1]%>%group_by(name)%>%summarise_all(mean)),
+                aes(x=as.numeric(name),y=value,col="60-100"))+
+      scale_y_continuous("absorbance",sec.axis = sec_axis("",trans=~.,breaks=NULL))+
+      scale_color_manual("depth [cm]",breaks=c("0-30","30-60","60-100"),values = colorblind_safe_colors[c(2,4,6)])+
+      #scale_x_log10(expression(wavenumber*" "*cm^-1),breaks=c(500,1000,2500,5000),sec.axis=sec_axis("wavelength [nm]",trans=wavenumber_to_wavelength,breaks=wavenumber_to_wavelength(c(500,1000,2500,5000))))+
+      theme_pubr()+theme(legend.position = "bottom")->finished_plt
+ #   ggplotly(
+ #    finished_plt
+ #   )
+  }
+  {
+  svg(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/",
+           "BDF_main-spc_depth.svg"),
+    width=12,
+    height=6)
+  plot(finished_plt)
+  dev.off()
+}
+```
+
+#### Distance plots (PCA, mahalanobis dist. etc)
+```{r}
+
+# load 
+{
+  tmp1 = read_rds(paste0(root_dir,"/GitHub/BDF/BDF-SSL/4_datasets/Adam-2023_BDF_main_sub-1"))
+  tmp2 = read_rds(paste0(root_dir,"/GitHub/BDF/BDF-SSL/4_datasets/Adam-2023_BDF_main_sub-2"))
+  
+  BDF_main=rbind(
+    tmp1,
+    tmp2
+    )
+  rm(tmp1)
+  rm(tmp2)
+}
+
+
+# PCA for train test of TC set
+{
+cubistvar=read_rds(paste0(root_dir,model_folder="/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models/cubist_spc_sg_snv_rs4-none-TC"))
+
+dissimilarity(
+Xr = cubistvar$documentation$train_data$spc_sg_snv_rs4,
+#Yr = cubistvar$documentation$train_data$var,
+Xu = cubistvar$documentation$test_data$spc_sg_snv_rs4,
+diss_method = "pca.nipals",
+gh = F,return_projection = T
+)->diss_var
+
+projection_var=diss_var$projection$scores%>%data.frame%>%rownames_to_column()%>%mutate(set=case_match(substr(rowname,1,2),"Xr"~"Train","Xu"~"Test"))
+
+projection_var%>%filter(set=="Train")->projection_var_train
+projection_var%>%filter(set=="Test")->projection_var_test
+
+
+train_hull_12=convex.hull(tri.mesh(
+  x = projection_var_train$pc_1,
+  y= projection_var_train$pc_2
+  ),plot.it = F)
+test_hull_12=convex.hull(tri.mesh(
+x = projection_var_test$pc_1,
+  y= projection_var_test$pc_2
+  ),plot.it = F)
+
+
+train_hull_13=convex.hull(tri.mesh(
+  x = projection_var_train$pc_1,
+  y= projection_var_train$pc_3
+  ),plot.it = F)
+test_hull_13=convex.hull(tri.mesh(
+x = projection_var_test$pc_1,
+  y= projection_var_test$pc_3
+  ),plot.it = F)
+
+train_hull_23=convex.hull(tri.mesh(
+  x = projection_var_train$pc_2,
+  y= projection_var_train$pc_3
+  ),plot.it = F)
+test_hull_23=convex.hull(tri.mesh(
+x = projection_var_test$pc_2,
+  y= projection_var_test$pc_3
+  ),plot.it = F)
+
+{
+  svg(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/PCA_convex_hull.svg"),width=8,height = 3)
+  plot(
+ggarrange(
+(
+projection_var_train%>%ggplot(aes(x=pc_1,y=pc_2,col=set))+
+  geom_point()+
+  geom_point(data=projection_var_test)+
+  geom_polygon(data=data.frame(x=train_hull_12$x,
+                               y=train_hull_12$y),
+               aes(x=x,y=y,fill="Train",
+                               col="Train"),alpha=.1)+
+  geom_polygon(data=data.frame(x=test_hull_12$x,
+                               y=test_hull_12$y),
+               aes(x=x,y=y,fill="Test",
+                               col="Test"),alpha=.1)+
+  scale_color_manual("",breaks=c("Train","Test"),values = colorblind_safe_colors[c(2,4)])+
+  scale_fill_manual("",breaks=c("Train","Test"),values = colorblind_safe_colors[c(2,4)])+
+  theme_pubr()
+),
+(
+projection_var_train%>%ggplot(aes(x=pc_1,y=pc_3,col=set))+
+  geom_point()+
+  geom_point(data=projection_var_test)+
+  geom_polygon(data=data.frame(x=train_hull_13$x,
+                               y=train_hull_13$y),
+               aes(x=x,y=y,fill="Train",
+                               col="Train"),alpha=.1)+
+  geom_polygon(data=data.frame(x=test_hull_13$x,
+                               y=test_hull_13$y),
+               aes(x=x,y=y,fill="Test",
+                               col="Test"),alpha=.1)+
+  scale_color_manual("",breaks=c("Train","Test"),values = colorblind_safe_colors[c(2,4)])+
+  scale_fill_manual("",breaks=c("Train","Test"),values = colorblind_safe_colors[c(2,4)])+
+  theme_pubr()
+),
+(
+projection_var_train%>%ggplot(aes(x=pc_2,y=pc_3,col=set))+
+  geom_point()+
+  geom_point(data=projection_var_test)+
+  geom_polygon(data=data.frame(x=train_hull_23$x,
+                               y=train_hull_23$y),
+               aes(x=x,y=y,fill="Train",
+                               col="Train"),alpha=.1)+
+  geom_polygon(data=data.frame(x=test_hull_23$x,
+                               y=test_hull_23$y),
+               aes(x=x,y=y,fill="Test",
+                               col="Test"),alpha=.1)+
+  scale_color_manual("",breaks=c("Train","Test"),values = colorblind_safe_colors[c(2,4)])+
+  scale_fill_manual("",breaks=c("Train","Test"),values = colorblind_safe_colors[c(2,4)])+
+  theme_pubr()
+),
+common.legend = T,ncol = 3)
+)
+dev.off()
+}
+}
+```
+
+### General description of model runs
+Models were created from the BDF_main dataset of the BDF-SSL.
+Model types used for the var dependant split models were Cubist, PLS, MBL.
+For the model creation of each variable (n=28, n=31 incl. TOCratios, but those were only tested with cubist), NA entries were removed
+and the dataset was split into 75 % training and 25 % testing sets using caret::createDataPartition(). The splitting method is a quantile-based random sampling. This ensures somewhat equal distribution of the traget variable between training and testing data.
+Models were created using untransformed prdictor variables and log(1+p) transformed variabels. 
+Models were als created for several differnt spectral pretreatments, including raw resampled spectra, smoothed spectra, smoothed + baseline corrected, smoothed + standard normal variate corrected, smoothed and first derivative, and smoothed and second derivative.
+
+PLS and Cubist: Best no. of components from comp=c(1:30) or best tuning parameters from neighbors=c(1:9) and committees=c(1,2,5,10,20,50) by lowest RMSEcv of 10 fold cv.
+MBL: best k from k=seq(50,n,10) by lowest RMSEcv of the local, 10-fold crossvalidation.
+MBL creates model for each individual predictor spectra. To mimic PLS/Cubist ealuation and to assess model performance, test predictions were calculated.
+
+
+Models were created using the scripts:
+
+```{r echo=FALSE}
+print(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/PLS_fit_var_dependant.R"))
+print(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/Cubist_fit_var_dependant.R"))
+print(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/MBL_var_dependant.R"))
+```
+In addition to the default caret model training output, a nested object "documentation" was appeded to the output object. It contains information about the model inputs (spc sets, varaible etc.) and the split training and testing data. The predictions for the test set and statistics calculated from those and the test observations are also appended.
+
+
+
+#### Train test split 
+The code below creates train / test density plots for the relevant varaibles in the reference dataset based on the variable-dependant splits used in the cubist models. Density cureves are scaled to 1
+
+```{r}
+## Pulling the varaibles from filenames ####
+var_list<-((list.files(paste0(root_dir,"/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models/"),pattern = "cubist")%>%
+               str_split_fixed(pattern="-",n=3))[-c(397),3]%>%unique)[-c(23,24,30)]
+  
+
+  #loop for pulling data
+plot_data=c()
+for (i in var_list){
+  model=read_rds(paste0(root_dir,"/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models/",
+                        "cubist_spc_sg_snv_rs4-none-",i))
+  plot_data=bind_rows(
+    plot_data,
+
+    bind_rows(
+      tibble(variable=i,set="train",value=model$documentation$train_data[[1]]),
+      tibble(variable=i,set="test",value=model$documentation$test_data[[1]])
+    )
+  )
+}
+
+# summary statistics  
+  stat_data<-plot_data%>%group_by(set,variable)%>%
+    summarise(Min=min(value,na.rm=T),
+              Max=max(value,na.rm=T),
+              Mean=mean(value,na.rm=T),
+              Median=median(value,na.rm=T),
+              n=length(na.omit(value)))%>%
+    mutate(x=plot_data%>%
+             group_by(variable)%>%
+             summarise(x=max(value,na.rm = T))%>%
+             pull(x)*2,
+           y=if_else(set=="train",2,.25))
+  
+  
+  
+## DENSITY + BOXPLOT GRID for all cubist vars ####
+  
+{
+
+# for formatting multiplot  
+ncol_select=2
+
+  svg(paste0(root_dir,
+             "/GitHub/BDF/BDF-SSL/3_r_scripts/temp/",
+             "all_cubist_variable-distribution_Density-Boxplot_var_dep_splits",
+             ".svg"),
+      # approx. format 4:1 for individual plots
+      height=1.5*ceiling(length(var_list)/ncol_select),
+      width=7)
+
+# main plot
+  plot({
+    plot_data%>%
+      ggplot(aes(alpha=set)) +
+
+      # horizontal boxplots & density plots
+
+      stat_density(aes(x = value,
+                       y = after_stat(scaled),
+                       fill = set
+                       ),
+                   color="black",
+      ) +
+      geom_boxplot(aes(x = value,y=ifelse(set=="train",-.15,-.4)),width=.2,fill="lightgrey") +
+      geom_text(data=stat_data,
+                lineheight=.65,
+                size=3.5,
+                aes(x=x,
+                    y=y,
+                    alpha=set,
+                    label=paste0("n=",n,
+                                 " mean=",format(Mean,nsmall=2,digits=2),
+                                 "\nmin=",format(Min,nsmall=2,digits=2),
+                                 " max=",format(Max,nsmall=2,digits=2))),
+                hjust="inward",
+                vjust="inward")+
+      #stat_summary(aes(group=set),geom = "text",fun.data = summary_fun,na.rm = T)+
+      #geom_text(aes(x=alpha=set,label=set))+
+
+      facet_wrap(facets = vars(variable),
+                 ncol=ncol_select,
+                 scales = "free",
+                 labeller = labeller(variable=var_labels)) +
+      scale_fill_discrete()+
+      #scale_color_discrete("Set")+
+      scale_alpha_manual("Set",
+                         breaks=c("train","test"),
+                         values = c(.75,.25),
+                         labels=c("Training","Testing"))+
+      theme_pubr()+
+      theme(legend.direction = "horizontal",legend.position = "bottom", # when using all main vars, put legend in the empty bot-right spot
+            axis.title.y = element_blank(),
+            axis.text.y = element_blank(),
+            axis.ticks.y = element_blank(),
+            axis.title.x = element_blank(),
+            axis.text.x = element_text(size=10)
+      )
+  })
+  dev.off()
+}
+
+
+## DENSITY + BOXPLOT GRID forall cubist vars INDIVIDUAL ####
+
+{
+ 
+  
+  # loop
+  density_plotlist=c()
+  for (i in var_list){
+    density_plotlist[[i]]=(
+      plot_data%>%filter(variable==i)%>%
+      ggplot(aes(alpha=set)) +
+      
+      # horizontal boxplots & density plots
+      
+      stat_density(aes(x = value,
+                       y = after_stat(scaled),
+                       fill = variable
+      ),
+      color="black",
+      ) +
+      geom_boxplot(aes(x = value,y=ifelse(set=="train",-.15,-.4)),width=.2,fill="lightgrey") +
+      geom_text(data=filter(stat_data,variable==i),
+                lineheight=.65,
+                size=3.5,
+                aes(x=x,
+                    y=y,
+                    alpha=set,
+                    label=paste0("n=",n,
+                                 " mean=",format(Mean,nsmall=0,digits=2),
+                                 "\nmin=",format(Min,nsmall=0,digits=2),
+                                 " max=",format(Max,nsmall=0,digits=2))),
+                hjust="inward",
+                vjust="inward")+
+      #stat_summary(aes(group=set),geom = "text",fun.data = summary_fun,na.rm = T)+
+      #geom_text(aes(x=alpha=set,label=set))+
+      ggtitle(i)+
+     
+      scale_fill_manual("Variable",breaks=var_list,values = gg_color_hue(length(var_list)))+
+      scale_color_discrete("Set")+
+      scale_alpha_manual("Set",
+                         breaks=c("train","test"),
+                         values = c(.75,.25),
+                         labels=c("Training","Testing"))+
+      theme_pubr()+
+      theme(legend.direction = "horizontal",legend.position = "bottom", # when using all main vars, put legend in the empty bot-right spot
+            axis.title.y = element_blank(),
+            axis.text.y = element_blank(),
+            axis.ticks.y = element_blank(),
+            axis.title.x = element_blank(),
+            axis.text.x = element_text(size=10)
+      )
+    )
+  }
+}
+# save as object
+saveRDS(density_plotlist,paste0(root_dir,
+             "/GitHub/BDF/BDF-SSL/3_r_scripts/temp/",
+               "all_cubist_variable-distribution_Density-Boxplot_var_dep_splits_individual"))
+
+# plot selection
+svg(paste0(root_dir,
+             "/GitHub/BDF/BDF-SSL/3_r_scripts/temp/",
+           "all_cubist_variable-distribution_Density-Boxplot_var_dep_splits_individual_mainEGU.svg"),
+        width=3,height=12)
+ggarrange(plotlist = density_plotlist[c(
+  "S","U","T","KAKpot","Nt","Pt","Al_t","Fe_t","Ni_t")],ncol=1,common.legend = T,legend="none")
+dev.off()
+
+
+svg(paste0(root_dir,
+             "/GitHub/BDF/BDF-SSL/3_r_scripts/temp/",
+           "all_cubist_variable-distribution_Density-Boxplot_var_dep_splits_individual_solitocEGU.svg"),
+        width=3,height=7/3*4)
+ggarrange(plotlist = density_plotlist[c(
+  "Ct","CORG","TC","TOC","TOC400","ROC","TIC900")],ncol=1,common.legend = T,legend="none")
+dev.off()
+
+```
+
+
+#### Evaluating models
+For all created models an aggregated evaluation object was created using the evaluate_model_batch() function found in packages.R
+```{r echo=TRUE,warning=FALSE,message=FALSE, results=FALSE}
+
+# !!! verbose does not work in markdown chunk... expect several min runtime
+
+#PLS
+evaluate_model_batch(root_dir = root_dir,
+                    model_folder = "/GitHub/BDF/BDF-SSL/2_models/1_PLS_models/",
+                    model_type_pattern = "pls_",
+                    new_eval = T
+                    )
+
+#Cubist
+evaluate_model_batch(root_dir = root_dir,
+                    model_folder = "/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models/",
+                    model_type_pattern = "cubist_",
+                    new_eval = T
+                    )
+
+
+#MBL
+evaluate_model_batch(root_dir = root_dir,
+                    model_folder = "/GitHub/BDF/BDF-SSL/2_models/3_MBL_models_test/",
+                    model_type_pattern = "mbl_",
+                    new_eval = T
+                    )
+
+
+
+
+
+```
+
+
+
+The resulting object is saved in the model folder. Here we load it again and pull the test evaluation statistics. E.g., for the Cubist models:
+
+```{r}
+
+# model folder path
+model_folder="/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models/"
+
+evaluation=read_rds(paste0(root_dir,model_folder,"/evaluation"))
+
+evaluation$eval
+```
+
+
+#### Selecting best models
+We select the best models based on the lowest RMSE:
+
+##### PLS
+```{r}
+model_folder="/GitHub/BDF/BDF-SSL/2_models/1_PLS_models/"
+
+pls_evaluation=read_rds(paste0(root_dir,model_folder,"/evaluation"))
+
+pls_evaluation_best_rmse=pls_evaluation$new_eval_table%>%group_by(variable)%>%slice(which.min(rmse))
+write_excel_csv(pls_evaluation_best_rmse,paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/pls_best_rmse.csv"))
+pls_evaluation_best_rmse
+
+((left_join(pls_evaluation$eval,
+            (pls_evaluation$eval%>%group_by(variable)%>%
+               summarise(mean_rmse=mean(test.rmse))),by="variable")%>%
+    mutate(rel_rmse=test.rmse/mean_rmse))[,c(1,2,3,33,34)])%>%
+  ggplot(aes(x=set,y=rel_rmse))+
+  geom_boxplot()+
+  stat_summary(fun=mean,geom="point",shape=4,size=2)+
+  #scale_y_log10()+
+  xlab("")+
+  theme_pubr()
+
+pre_process_eval(pls_evaluation$eval,"test.rmse",fill_var = "set",fill_vals = colorblind_safe_colors[c(1:6)])+theme(axis.text.x = element_text(angle=90,hjust=1,vjust=.5))+ylab("Rel.  RMSEP")+xlab("")
+
+```
+
+#####Cubist
+```{r}
+model_folder="/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models/"
+
+cubist_evaluation=read_rds(paste0(root_dir,model_folder,"/evaluation"))
+
+cubist_evaluation_best_rmse=cubist_evaluation$new_eval_table%>%group_by(variable)%>%slice(which.min(rmse))
+write_excel_csv(cubist_evaluation_best_rmse,paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/cubist_best_rmse.csv"))
+cubist_evaluation_best_rmse
+
+# processing performance ####
+((left_join(cubist_evaluation$eval,
+            (cubist_evaluation$eval%>%group_by(variable)%>%
+               summarise(mean_rmse=mean(test.rmse))),by="variable","set")%>%
+    mutate(rel_rmse=test.rmse/mean_rmse))[,c(1,2,3,33,34)])%>%
+  ggplot(aes(x=set,y=rel_rmse))+
+  geom_boxplot()+
+  stat_summary(fun=mean,geom="point",shape=4,size=2)+
+  scale_y_log10()+
+  theme_pubr()
+
+
+
+pre_process_eval(cubist_evaluation$eval,"test.rmse",fill_var = "set",fill_vals = colorblind_safe_colors[c(1:6)])+theme(axis.text.x = element_text(angle=90,hjust=1,vjust=.5))+ylab("Rel.  RMSEP")+xlab("")
+
+
+```
+
+##### MBL
+```{r}
+model_folder="/GitHub/BDF/BDF-SSL/2_models/3_MBL_models_test/"
+
+mbl_evaluation=read_rds(paste0(root_dir,model_folder,"/evaluation"))
+
+mbl_evaluation_best_rmse=mbl_evaluation$new_eval_table%>%group_by(variable)%>%slice(which.min(rmse))
+write_excel_csv(mbl_evaluation_best_rmse,paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/mbl_best_rmse.csv"))
+mbl_evaluation_best_rmse
+
+pre_process_eval(mbl_evaluation$eval,"test.rmse",fill_var = "set",fill_vals = colorblind_safe_colors[c(1:6)])+theme(axis.text.x = element_text(angle=90,hjust=1,vjust=.5))+ylab("Rel.  RMSEP")+xlab("")
+```
+
+##### ALL combined
+```{r}
+model_folder="/GitHub/BDF/BDF-SSL/2_models/1_PLS_models/"
+pls_evaluation=read_rds(paste0(root_dir,model_folder,"/evaluation"))
+
+model_folder="/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models/"
+cubist_evaluation=read_rds(paste0(root_dir,model_folder,"/evaluation"))
+
+model_folder="/GitHub/BDF/BDF-SSL/2_models/3_MBL_models_test/"
+mbl_evaluation=read_rds(paste0(root_dir,model_folder,"/evaluation"))
+
+all_evaluation=bind_rows(
+  tibble(model="pls",pls_evaluation$new_eval_table),
+  tibble(model="cubist",cubist_evaluation$new_eval_table),
+  tibble(model="mbl",mbl_evaluation$new_eval_table))
+
+
+all_evaluation_full=list(pls=pls_evaluation,cubist=cubist_evaluation,mbl=mbl_evaluation)
+saveRDS(all_evaluation_full,paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/all_evaluation"))
+        
+write_excel_csv(all_evaluation,paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/all_evaluation.csv"))
+
+
+
+all_evaluation_best_rmse=all_evaluation%>%group_by(variable)%>%slice(which.min(rmse))
+
+all_evaluation_best_rmse%>%
+  select(all_of(c("model","set","trans","variable","n","min","max","mean","median","rmse","rmsre","R2","b","bias","rpd","linsCCC")))%>%
+  rename(Modell=model,Processing=set,Trans.=trans,Variable=variable,n=n,min=min,max=max,Mittel=mean,Median=median,RMSEP=rmse,RMSREP=rmsre,R2=R2,Steigung=b,Bias=bias,RPD=rpd,`Lins CCC`=linsCCC)%>%
+mutate(min=format(min,digits=3),
+       max=format(max,digits=3),
+       Mittel=format(Mittel,digits=3),
+       Median=format(Median,digits=3),
+       RMSEP=format(RMSEP,digits=3),
+       R2=format(R2,digits=3),
+       Steigung=format(Steigung,digits=3),
+       Bias=format(Bias,digits=2),
+       RPD=format(RPD,digits=3),
+       `Lins CCC`=format(`Lins CCC`,digits=3))%>%
+    
+  
+write_excel_csv(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/all_evaluation_best-rmse.csv"))
+
+
+{
+svg(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/all_eval_spc_preprocess_relRMSE.svg"),
+      width=8,
+      height=4)
+plot(
+pre_process_eval(evaluation = all_evaluation,
+                metric="rmse",fill_var="model",fill_vals=colorblind_safe_colors[2:4],dodge=.75)+
+  theme(axis.text.x = element_text(angle=45,hjust=1,vjust=1),legend.title = element_blank())+
+  ylab("Rel.  RMSEP")+xlab(""))+
+  ylim(c(.25,2.75))+
+  geom_point(inherit.aes = F,aes(x="spc_sg1d_rs4",group="cubist spc_sg1d_rs4",y=2.5),shape="*",size=6,col="grey50",position=position_nudge(-.25))+
+  geom_text(inherit.aes = F,aes(x="spc_sg1d_rs4",group="cubist spc_sg1d_rs4",y=2.5,label = "> 4"),col="grey50",position=position_nudge(x = -.25,y=.15))
+dev.off()
+}
+
+
+
+
+
+all_evaluation_best_rmse%>%mutate(NRMSE_iqr=test.rmse/test.iqr*100)%>%
+  ggplot(aes(x=fct_reorder(variable,NRMSE_iqr),y=NRMSE_iqr))+geom_col()
+
+#nrmseavg
+
+all_evaluation%>%filter(variable%>%str_detect("ratio",negate = T))%>%#mutate(NRMSE_iqr=test.rmse/test.iqr*100)%>%
+  group_by(variable)%>%summarise(r=abs(max(nrmseavg)-min(nrmseavg)))%>%arrange(r)%>%#view
+  ggplot(aes(
+             y=r*100))+geom_boxplot()
+
+
+# barplot sorted
+
+{
+  svg(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/preformance_nrmseavg.svg"),
+      width=8,
+      height=4)
+all_evaluation%>%filter(variable%>%str_detect("ratio",negate = T))%>%#mutate(NRMSE_iqr=test.rmse/test.iqr*100)%>%
+  group_by(variable)%>%summarise(NRMSEavg_min=min(nrmseavg))%>%right_join(all_evaluation%>%filter(variable%>%str_detect("ratio",negate = T))#%>%mutate(NRMSE_iqr=test.rmse/test.iqr*100)
+                                                                       ,by="variable")%>%
+  ggplot(aes(x=fct_reorder(variable,NRMSEavg_min),
+             y=nrmseavg*100,
+             group=fct_reorder(paste(variable,model,set,trans),nrmseavg*100)))+
+  geom_hline(yintercept = 5,"dotted")+
+  geom_hline(yintercept = 10,"dotted")+
+  geom_hline(yintercept = 25,"dotted")+
+geom_hline(yintercept = 50,"dotted")+
+  geom_hline(yintercept = 100,"dotted")+
+  geom_col(position="dodge",linewidth=.0001,aes(fill=variable))+
+  scale_y_log10(breaks=c(5,10,25,50,100))+
+  stat_summary(geom="point",fun = min,aes(group=variable),shape="_",size=10)+theme_pubr()+
+  theme(legend.position = "none",axis.text.x = element_text(angle=45,hjust=1,vjust=1),axis.title.x = element_blank())+ylab(expression("NRMS"*E[avg]*" [%]"))
+dev.off()
+  }
+
+#rmsre
+{
+(all_evaluation%>%filter(variable%>%str_detect("ratio",negate = T))%>%#mutate(NRMSE_iqr=test.rmse/test.iqr*100)%>%
+  group_by(variable)%>%summarise(rmsre_min=min(rmsre))%>%right_join(all_evaluation%>%filter(variable%>%str_detect("ratio",negate = T))#%>%mutate(NRMSE_iqr=test.rmse/test.iqr*100)
+                                                                       ,by="variable")%>%
+  ggplot(aes(x=fct_reorder(variable,rmsre_min),
+             y=rmsre*100,
+             group=fct_reorder(paste(variable,model,set,trans),rmsre*100)))+
+  geom_hline(yintercept = 10,"dotted")+
+  geom_hline(yintercept = 25,"dotted")+
+geom_hline(yintercept = 50,"dotted")+
+  geom_hline(yintercept = 100,"dotted")+
+  geom_col(position="dodge",linewidth=.0001,aes(fill=variable))+
+  scale_y_log10(breaks=c(10,25,50,100))+
+  geom_point(aes(y=rmsre_min*100))+
+  theme_pubr()+
+  theme(legend.position = "none",axis.text.x = element_text(angle=45,hjust=1,vjust=1))+ylab(""))%>%ggplotly
+}
+```
+
+```{r}
+ggplotly(ggplot(all_evaluation,aes(x=rmsre,y=nrmseiqr,col=variable,shape=model))+geom_point())
+```
+
+
+
+#### comparing soliTOC vs DRIFTS vs BDF CUBIST
+```{r}
+carbon_comparison=list(
+  DRIFTS=list(
+    TOC=cubist_evaluation$Obs_Pred_data[[get_best(cubist_evaluation$eval,variable_ = "TOC")]]$test,
+    TC=cubist_evaluation$Obs_Pred_data[[get_best(cubist_evaluation$eval,variable_ = "TC")]]$test,
+    Ct=cubist_evaluation$Obs_Pred_data[[get_best(cubist_evaluation$eval,variable_ = "Ct")]]$test,
+    CORG=cubist_evaluation$Obs_Pred_data[[get_best(cubist_evaluation$eval,variable_ ="CORG")]]$test
+  ),
+  soliTOC=data.frame(
+    TOC=BDF_main$soliTOC$TOC,
+    TC=BDF_main$soliTOC$TC,
+    CORG=BDF_main$BDF_database$CORG,
+    Ct=BDF_main$BDF_database$Ct
+  )
+)  
+  
+eval_out=rbind(
+data.frame(method="DRIFTS",param="TOC",evaluate_model_adjusted(carbon_comparison$DRIFTS$TOC,obs="obs",pred="pred")),
+data.frame(method="DRIFTS",param="TC",evaluate_model_adjusted(carbon_comparison$DRIFTS$TC,obs="obs",pred="pred")),
+data.frame(method="DRIFTS",param="CORG",evaluate_model_adjusted(carbon_comparison$DRIFTS$CORG,obs="obs",pred="pred")),
+data.frame(method="DRIFTS",param="Ct",evaluate_model_adjusted(carbon_comparison$DRIFTS$Ct,obs="obs",pred="pred")),
+data.frame(method="soliTOC",param="TOC",evaluate_model_adjusted(carbon_comparison$soliTOC,obs="CORG",pred="TOC")),
+data.frame(method="soliTOC",param="TC",evaluate_model_adjusted(carbon_comparison$soliTOC,obs="Ct",pred="TC"))
+)
+
+
+data.frame(method="soliTOC",param="TOC",evaluate_model_adjusted(
+  data.frame(
+    TOC=(filter(BDF_main,soliTOC$TOC%in%carbon_comparison$DRIFTS$TOC$obs))$soliTOC$TOC,
+    CORG=(filter(BDF_main,soliTOC$TOC%in%carbon_comparison$DRIFTS$TOC$obs))$BDF_database$CORG
+    
+    
+  )
+  ,obs="CORG",pred="TOC"))
+```
+
+
+
+
+#### OBS_PRED Plots
+We can also plot the Observations vs. the predictions of the best models:
+```{r fig.height=30,fig.width=15, warnings=FALSE, message=FALSE,echo=FALSE}
+pls_multiplot=obs_pred_mutliplot(pls_evaluation,prefix = "pls_",units =read_csv(paste0(root_dir,"/GitHub/BDF/BDF-SSL/5_Provided_BDF-Database/Adam-2024_UBoden-UNITS_lookup.csv")),ncol_plot = 4)
+
+cubist_multiplot=obs_pred_mutliplot(cubist_evaluation, prefix="cubist_",units =read_csv(paste0(root_dir,"/GitHub/BDF/BDF-SSL/5_Provided_BDF-Database/Adam-2024_UBoden-UNITS_lookup.csv")),ncol_plot = 4,scaling_x = .3,scaling_y =.15)
+
+mbl_multiplot=obs_pred_mutliplot(mbl_evaluation,prefix = "mbl_",units =read_csv(paste0(root_dir,"/GitHub/BDF/BDF-SSL/5_Provided_BDF-Database/Adam-2024_UBoden-UNITS_lookup.csv")),ncol_plot = 4)
+
+# cubist ####
+{
+  svg(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/cubist_obs_pred1.svg"),
+      width=5,
+      height=5*6)
+  plot(
+    ggarrange(
+      plotlist=
+        cubist_multiplot$individual[c(
+        #1
+          get_best(cubist_evaluation$eval,prefix = "cubist_",maximise = F,metric = "test.rmse",variable_="TOC400"),
+          get_best(cubist_evaluation$eval,prefix = "cubist_",maximise = F,metric = "test.rmse",variable_="ROC"),
+          get_best(cubist_evaluation$eval,prefix = "cubist_",maximise = F,metric = "test.rmse",variable_="TIC900"),
+          get_best(cubist_evaluation$eval,prefix = "cubist_",maximise = F,metric = "test.rmse",variable_="TOC"),
+          get_best(cubist_evaluation$eval,prefix = "cubist_",maximise = F,metric = "test.rmse",variable_="TC"),
+          get_best(cubist_evaluation$eval,prefix = "cubist_",maximise = F,metric = "test.rmse",variable_="CORG"))],
+          ncol=1
+        )
+  )
+  dev.off()
+    svg(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/cubist_obs_pred2.svg"),
+      width=5,
+      height=5*6)
+  plot(
+    ggarrange(
+      plotlist=
+        cubist_multiplot$individual[c(
+          #2
+          get_best(cubist_evaluation$eval,prefix = "cubist_",maximise = F,metric = "test.rmse",variable_="Ct"),
+          get_best(cubist_evaluation$eval,prefix = "cubist_",maximise = F,metric = "test.rmse",variable_="S"),
+          get_best(cubist_evaluation$eval,prefix = "cubist_",maximise = F,metric = "test.rmse",variable_="U"),
+          get_best(cubist_evaluation$eval,prefix = "cubist_",maximise = F,metric = "test.rmse",variable_="T"),
+          get_best(cubist_evaluation$eval,prefix = "cubist_",maximise = F,metric = "test.rmse",variable_="fU"),
+          get_best(cubist_evaluation$eval,prefix = "cubist_",maximise = F,metric = "test.rmse",variable_="mU"))
+          ],
+          ncol=1
+        )
+  )
+  dev.off()
+    svg(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/cubist_obs_pred3.svg"),
+      width=5,
+      height=5*6)
+  plot(
+    ggarrange(
+      plotlist=
+        cubist_multiplot$individual[c(
+          # 3
+           get_best(cubist_evaluation$eval,prefix = "cubist_",maximise = F,metric = "test.rmse",variable_="gU"),
+          get_best(cubist_evaluation$eval,prefix = "cubist_",maximise = F,metric = "test.rmse",variable_="fS"),
+          get_best(cubist_evaluation$eval,prefix = "cubist_",maximise = F,metric = "test.rmse",variable_="mS"),
+          get_best(cubist_evaluation$eval,prefix = "cubist_",maximise = F,metric = "test.rmse",variable_="gS"),
+          get_best(cubist_evaluation$eval,prefix = "cubist_",maximise = F,metric = "test.rmse",variable_="Nt"),
+          get_best(cubist_evaluation$eval,prefix = "cubist_",maximise = F,metric = "test.rmse",variable_="Pt")
+         )],
+          ncol=1
+        )
+  )
+  dev.off()
+    svg(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/cubist_obs_pred4.svg"),
+      width=5,
+      height=5*6)
+  plot(
+    ggarrange(
+      plotlist=
+        cubist_multiplot$individual[c(
+          #4
+          
+          get_best(cubist_evaluation$eval,prefix = "cubist_",maximise = F,metric = "test.rmse",variable_="KAKpot"),
+          get_best(cubist_evaluation$eval,prefix = "cubist_",maximise = F,metric = "test.rmse",variable_="Al_t"),
+          get_best(cubist_evaluation$eval,prefix = "cubist_",maximise = F,metric = "test.rmse",variable_="B_t"),
+          get_best(cubist_evaluation$eval,prefix = "cubist_",maximise = F,metric = "test.rmse",variable_="Ca_t"),
+          get_best(cubist_evaluation$eval,prefix = "cubist_",maximise = F,metric = "test.rmse",variable_="Cu_t"),
+          get_best(cubist_evaluation$eval,prefix = "cubist_",maximise = F,metric = "test.rmse",variable_="Fe_t")
+        )],
+          ncol=1
+        )
+  )
+  dev.off()
+    svg(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/cubist_obs_pred5.svg"),
+      width=5,
+      height=5*6)
+  plot(
+    ggarrange(
+      plotlist=
+        cubist_multiplot$individual[c(
+#5
+          get_best(cubist_evaluation$eval,prefix = "cubist_",maximise = F,metric = "test.rmse",variable_="K_t"),
+          get_best(cubist_evaluation$eval,prefix = "cubist_",maximise = F,metric = "test.rmse",variable_="Mg_t"),
+          get_best(cubist_evaluation$eval,prefix = "cubist_",maximise = F,metric = "test.rmse",variable_="Mn_t"),
+          get_best(cubist_evaluation$eval,prefix = "cubist_",maximise = F,metric = "test.rmse",variable_="Mo_t"),
+          get_best(cubist_evaluation$eval,prefix = "cubist_",maximise = F,metric = "test.rmse",variable_="Ni_t"),
+          get_best(cubist_evaluation$eval,prefix = "cubist_",maximise = F,metric = "test.rmse",variable_="Zn_t"))],
+      ncol=1
+        )
+  )
+  dev.off()
+}
+
+
+
+# pls ####
+
+{
+  svg(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/pls_obs_pred1.svg"),
+      width=5,
+      height=5*6)
+  plot(
+    ggarrange(
+      plotlist=
+        pls_multiplot$individual[c(
+        #1
+          get_best(pls_evaluation$eval,prefix = "pls_",maximise = F,metric = "test.rmse",variable_="TOC400"),
+          get_best(pls_evaluation$eval,prefix = "pls_",maximise = F,metric = "test.rmse",variable_="ROC"),
+          get_best(pls_evaluation$eval,prefix = "pls_",maximise = F,metric = "test.rmse",variable_="TIC900"),
+          get_best(pls_evaluation$eval,prefix = "pls_",maximise = F,metric = "test.rmse",variable_="TOC"),
+          get_best(pls_evaluation$eval,prefix = "pls_",maximise = F,metric = "test.rmse",variable_="TC"),
+          get_best(pls_evaluation$eval,prefix = "pls_",maximise = F,metric = "test.rmse",variable_="CORG"))],
+          ncol=1
+        )
+  )
+  dev.off()
+    svg(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/pls_obs_pred2.svg"),
+      width=5,
+      height=5*6)
+  plot(
+    ggarrange(
+      plotlist=
+        pls_multiplot$individual[c(
+          #2
+          get_best(pls_evaluation$eval,prefix = "pls_",maximise = F,metric = "test.rmse",variable_="Ct"),
+          get_best(pls_evaluation$eval,prefix = "pls_",maximise = F,metric = "test.rmse",variable_="S"),
+          get_best(pls_evaluation$eval,prefix = "pls_",maximise = F,metric = "test.rmse",variable_="U"),
+          get_best(pls_evaluation$eval,prefix = "pls_",maximise = F,metric = "test.rmse",variable_="T"),
+          get_best(pls_evaluation$eval,prefix = "pls_",maximise = F,metric = "test.rmse",variable_="fU"),
+          get_best(pls_evaluation$eval,prefix = "pls_",maximise = F,metric = "test.rmse",variable_="mU"))
+          ],
+          ncol=1
+        )
+  )
+  dev.off()
+    svg(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/pls_obs_pred3.svg"),
+      width=5,
+      height=5*6)
+  plot(
+    ggarrange(
+      plotlist=
+        pls_multiplot$individual[c(
+          # 3
+           get_best(pls_evaluation$eval,prefix = "pls_",maximise = F,metric = "test.rmse",variable_="gU"),
+          get_best(pls_evaluation$eval,prefix = "pls_",maximise = F,metric = "test.rmse",variable_="fS"),
+          get_best(pls_evaluation$eval,prefix = "pls_",maximise = F,metric = "test.rmse",variable_="mS"),
+          get_best(pls_evaluation$eval,prefix = "pls_",maximise = F,metric = "test.rmse",variable_="gS"),
+          get_best(pls_evaluation$eval,prefix = "pls_",maximise = F,metric = "test.rmse",variable_="Nt"),
+          get_best(pls_evaluation$eval,prefix = "pls_",maximise = F,metric = "test.rmse",variable_="Pt")
+         )],
+          ncol=1
+        )
+  )
+  dev.off()
+    svg(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/pls_obs_pred4.svg"),
+      width=5,
+      height=5*6)
+  plot(
+    ggarrange(
+      plotlist=
+        pls_multiplot$individual[c(
+          #4
+          
+          get_best(pls_evaluation$eval,prefix = "pls_",maximise = F,metric = "test.rmse",variable_="KAKpot"),
+          get_best(pls_evaluation$eval,prefix = "pls_",maximise = F,metric = "test.rmse",variable_="Al_t"),
+          get_best(pls_evaluation$eval,prefix = "pls_",maximise = F,metric = "test.rmse",variable_="B_t"),
+          get_best(pls_evaluation$eval,prefix = "pls_",maximise = F,metric = "test.rmse",variable_="Ca_t"),
+          get_best(pls_evaluation$eval,prefix = "pls_",maximise = F,metric = "test.rmse",variable_="Cu_t"),
+          get_best(pls_evaluation$eval,prefix = "pls_",maximise = F,metric = "test.rmse",variable_="Fe_t")
+        )],
+          ncol=1
+        )
+  )
+  dev.off()
+    svg(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/pls_obs_pred5.svg"),
+      width=5,
+      height=5*6)
+  plot(
+    ggarrange(
+      plotlist=
+        pls_multiplot$individual[c(
+#5
+          get_best(pls_evaluation$eval,prefix = "pls_",maximise = F,metric = "test.rmse",variable_="K_t"),
+          get_best(pls_evaluation$eval,prefix = "pls_",maximise = F,metric = "test.rmse",variable_="Mg_t"),
+          get_best(pls_evaluation$eval,prefix = "pls_",maximise = F,metric = "test.rmse",variable_="Mn_t"),
+          get_best(pls_evaluation$eval,prefix = "pls_",maximise = F,metric = "test.rmse",variable_="Mo_t"),
+          get_best(pls_evaluation$eval,prefix = "pls_",maximise = F,metric = "test.rmse",variable_="Ni_t"),
+          get_best(pls_evaluation$eval,prefix = "pls_",maximise = F,metric = "test.rmse",variable_="Zn_t"))],
+      ncol=1
+        )
+  )
+  dev.off()
+}
+
+# mbl ####
+
+{
+  svg(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/mbl_obs_pred1.svg"),
+      width=5,
+      height=5*6)
+  plot(
+    ggarrange(
+      plotlist=
+        mbl_multiplot$individual[c(
+        #1
+          get_best(mbl_evaluation$eval,prefix = "mbl_",maximise = F,metric = "test.rmse",variable_="TOC400"),
+          get_best(mbl_evaluation$eval,prefix = "mbl_",maximise = F,metric = "test.rmse",variable_="ROC"),
+          get_best(mbl_evaluation$eval,prefix = "mbl_",maximise = F,metric = "test.rmse",variable_="TIC900"),
+          get_best(mbl_evaluation$eval,prefix = "mbl_",maximise = F,metric = "test.rmse",variable_="TOC"),
+          get_best(mbl_evaluation$eval,prefix = "mbl_",maximise = F,metric = "test.rmse",variable_="TC"),
+          get_best(mbl_evaluation$eval,prefix = "mbl_",maximise = F,metric = "test.rmse",variable_="CORG"))],
+          ncol=1
+        )
+  )
+  dev.off()
+    svg(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/mbl_obs_pred2.svg"),
+      width=5,
+      height=5*6)
+  plot(
+    ggarrange(
+      plotlist=
+        mbl_multiplot$individual[c(
+          #2
+          get_best(mbl_evaluation$eval,prefix = "mbl_",maximise = F,metric = "test.rmse",variable_="Ct"),
+          get_best(mbl_evaluation$eval,prefix = "mbl_",maximise = F,metric = "test.rmse",variable_="S"),
+          get_best(mbl_evaluation$eval,prefix = "mbl_",maximise = F,metric = "test.rmse",variable_="U"),
+          get_best(mbl_evaluation$eval,prefix = "mbl_",maximise = F,metric = "test.rmse",variable_="T"),
+          get_best(mbl_evaluation$eval,prefix = "mbl_",maximise = F,metric = "test.rmse",variable_="fU"),
+          get_best(mbl_evaluation$eval,prefix = "mbl_",maximise = F,metric = "test.rmse",variable_="mU"))
+          ],
+          ncol=1
+        )
+  )
+  dev.off()
+    svg(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/mbl_obs_pred3.svg"),
+      width=5,
+      height=5*6)
+  plot(
+    ggarrange(
+      plotlist=
+        mbl_multiplot$individual[c(
+          # 3
+           get_best(mbl_evaluation$eval,prefix = "mbl_",maximise = F,metric = "test.rmse",variable_="gU"),
+          get_best(mbl_evaluation$eval,prefix = "mbl_",maximise = F,metric = "test.rmse",variable_="fS"),
+          get_best(mbl_evaluation$eval,prefix = "mbl_",maximise = F,metric = "test.rmse",variable_="mS"),
+          get_best(mbl_evaluation$eval,prefix = "mbl_",maximise = F,metric = "test.rmse",variable_="gS"),
+          get_best(mbl_evaluation$eval,prefix = "mbl_",maximise = F,metric = "test.rmse",variable_="Nt"),
+          get_best(mbl_evaluation$eval,prefix = "mbl_",maximise = F,metric = "test.rmse",variable_="Pt")
+         )],
+          ncol=1
+        )
+  )
+  dev.off()
+    svg(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/mbl_obs_pred4.svg"),
+      width=5,
+      height=5*6)
+  plot(
+    ggarrange(
+      plotlist=
+        mbl_multiplot$individual[c(
+          #4
+          
+          get_best(mbl_evaluation$eval,prefix = "mbl_",maximise = F,metric = "test.rmse",variable_="KAKpot"),
+          get_best(mbl_evaluation$eval,prefix = "mbl_",maximise = F,metric = "test.rmse",variable_="Al_t"),
+          get_best(mbl_evaluation$eval,prefix = "mbl_",maximise = F,metric = "test.rmse",variable_="B_t"),
+          get_best(mbl_evaluation$eval,prefix = "mbl_",maximise = F,metric = "test.rmse",variable_="Ca_t"),
+          get_best(mbl_evaluation$eval,prefix = "mbl_",maximise = F,metric = "test.rmse",variable_="Cu_t"),
+          get_best(mbl_evaluation$eval,prefix = "mbl_",maximise = F,metric = "test.rmse",variable_="Fe_t")
+        )],
+          ncol=1
+        )
+  )
+  dev.off()
+    svg(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/mbl_obs_pred5.svg"),
+      width=5,
+      height=5*6)
+  plot(
+    ggarrange(
+      plotlist=
+        mbl_multiplot$individual[c(
+#5
+          get_best(mbl_evaluation$eval,prefix = "mbl_",maximise = F,metric = "test.rmse",variable_="K_t"),
+          get_best(mbl_evaluation$eval,prefix = "mbl_",maximise = F,metric = "test.rmse",variable_="Mg_t"),
+          get_best(mbl_evaluation$eval,prefix = "mbl_",maximise = F,metric = "test.rmse",variable_="Mn_t"),
+          get_best(mbl_evaluation$eval,prefix = "mbl_",maximise = F,metric = "test.rmse",variable_="Mo_t"),
+          get_best(mbl_evaluation$eval,prefix = "mbl_",maximise = F,metric = "test.rmse",variable_="Ni_t"),
+          get_best(mbl_evaluation$eval,prefix = "mbl_",maximise = F,metric = "test.rmse",variable_="Zn_t"))],
+      ncol=1
+        )
+  )
+  dev.off()
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+{
+  svg(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/pls_obs_pred_nonC.svg"),
+    width=5,
+    height=20/7*9)
+  plot(
+  ggarrange(
+    plotlist=
+    pls_multiplot$individual[c(get_best(prefix="pls_",pls_evaluation_best_rmse,var="S"),
+                                   get_best(prefix="pls_",pls_evaluation_best_rmse,var="U"),
+                                   get_best(prefix="pls_",pls_evaluation_best_rmse,var="T"),
+                               get_best(prefix="pls_",pls_evaluation_best_rmse,var="KAKpot"),
+                                   get_best(prefix="pls_",pls_evaluation_best_rmse,var="Nt"),
+                                   get_best(prefix="pls_",pls_evaluation_best_rmse,var="Pt"),
+                                 get_best(prefix="pls_",pls_evaluation_best_rmse,var="Al_t"),
+                                 get_best(prefix="pls_",pls_evaluation_best_rmse,var="Fe_t"),
+                                 get_best(prefix="pls_",pls_evaluation_best_rmse,var="Ni_t"),
+                                   "annotation")],
+                                     ncol=1
+    )
+)
+dev.off()
+}
+
+
+
+{
+  svg(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/mbl_obs_pred_nonC.svg"),
+    width=5,
+    height=20/7*9)
+  plot(
+  ggarrange(
+    plotlist=
+    mbl_multiplot$individual[c(get_best(prefix="mbl_",mbl_evaluation_best_rmse,var="S"),
+                                   get_best(prefix="mbl_",mbl_evaluation_best_rmse,var="U"),
+                                   get_best(prefix="mbl_",mbl_evaluation_best_rmse,var="T"),
+                              get_best(prefix="mbl_",mbl_evaluation_best_rmse,var="KAKpot"),
+                                   get_best(prefix="mbl_",mbl_evaluation_best_rmse,var="Nt"),
+                                   get_best(prefix="mbl_",mbl_evaluation_best_rmse,var="Pt"),
+                                get_best(prefix="mbl_",mbl_evaluation_best_rmse,var="Al_t"),
+                                 get_best(prefix="mbl_",mbl_evaluation_best_rmse,var="Fe_t"),
+                                 get_best(prefix="mbl_",mbl_evaluation_best_rmse,var="Ni_t"),
+                                   "annotation")],
+                                     ncol=1
+    )
+)
+dev.off()
+}
+
+# all variables combined
+
+## pls
+ svg(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/pls_obs_pred_all.svg"),
+    width=15,
+    height=30)
+ pls_multiplot$multiplot
+dev.off()
+
+## cubist
+ svg(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/cubist_obs_pred_all.svg"),
+    width=15,
+    height=30)
+ cubist_multiplot$multiplot
+dev.off()
+
+## mbl
+ svg(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/mbl_obs_pred_all.svg"),
+    width=15,
+    height=30)
+ mbl_multiplot$multiplot
+dev.off()
+
+
+```
+
+#### Cubist specific soliTOC plot 
+This creates plots with 95% confidance bands for soliTOC variables and corresponding reference data
+```{r}
+# root_dir
+root_dir<-"~"
+
+## load packages ####
+source(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/evaluate_model_adjusted.R"))
+source(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/soliTOC_readR.R"))
+
+model_folder="/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models"
+
+
+test_evaluation=readRDS(paste0(root_dir,model_folder,"/evaluation"))
+
+
+
+
+# soliTOC specific evaluation changed intervals ####
+
+## pulling soliTOC variables ####
+{
+  # adjust manually (also min/max and label)
+  metric="test.rmse"
+  best_models_soliTOC=test_evaluation$eval%>%group_by(variable)%>%slice(which.min(.data[[metric]]))%>%
+    filter(variable%in%c("TOC400","ROC","TIC900","TOC","TC","CORG","Ct"))%>%
+    select(all_of(c("set","trans","variable","test.n","test.rmse","test.mae","test.R2","test.linsCCC","test.rpd")))
+ selection= paste("Models selected based on lowest RMSE\nof predictions for the test set")
+
+
+
+
+
+
+  ## plotting soliTOC variables with error margins ####
+
+
+label_list=c("95% prediction band (lab standard)",
+                                  "95% prediction band (reference method)",
+                                  "95% prediction band (predictions)")
+  UNITS=read_csv(paste0(root_dir,"/GitHub/BDF/BDF-SSL/5_Provided_BDF-Database/Adam-2024_UBoden-UNITS_lookup.csv"))
+  var_labels<-paste(UNITS$variable,UNITS$unit)
+  names(var_labels)<-UNITS$variable
+  best_models_soliTOC_plots=list()
+  # obs pred plots
+  for (i in best_models_soliTOC$variable){
+
+    best_model_stats=bind_cols(x=
+                                 test_evaluation$Obs_Pred_data[[get_best(best_models_soliTOC,variable_ = i)]]$test$obs%>%max,
+                               y=test_evaluation$Obs_Pred_data[[get_best(best_models_soliTOC,variable_ = i)]]$test$obs%>%min,
+                               best_models_soliTOC%>%filter(variable==i))
+
+    best_models_soliTOC_plots[[i]]<-(test_evaluation$plots[[get_best(best_models_soliTOC,variable_ = i)]]+
+
+                                       geom_ribbon(aes(x=obs,
+                                                       y=obs,
+                                                       ymin=obs-conf_95(pred,obs),# soliTOC_precision[[4,paste0(i,"_sd")]]*3,
+                                                       ymax=obs+conf_95(pred,obs),#soliTOC_precision[[4,paste0(i,"_sd")]]*3,
+                                                       col= "3",
+                                                       fill="3"
+                                       ),
+                                       alpha=.1,linewidth=.25)+
+                                       labs(
+                                         title=var_labels[[i]],
+                                         subtitle=
+                                           paste(best_model_stats%>%pull(set),"/",
+                                                 best_model_stats%>%pull(trans)))+
+                                       xlab("Observations")+
+                                       ylab("Predictions")+
+                                       geom_text(data = best_model_stats,
+                                                 lineheight=.65,
+                                                 size=3.5,
+                                                 aes(x=x,
+                                                     y=y,
+                                                     # alpha=set,
+                                                     label=paste0("n=",test.n,
+                                                                  " RMSE=",format(test.rmse,nsmall=2,digits=2),
+                                                                  "\nR2=",format(test.R2,nsmall=2,digits=2),
+                                                                  " RPD=",format(test.rpd,nsmall=2,digits=2))),
+                                                 hjust="inward",
+                                                 vjust="inward")+
+                                       scale_color_manual("Error margins",
+                                                          breaks=c("1","2","3"),
+                                                          labels=label_list,
+                                                          values=colorblind_safe_colors[c(4,2,3)])+
+                                       scale_fill_manual("Error margins",
+                                                         breaks=c("1","2","3"),
+                                                         labels=label_list,
+                                                         values=colorblind_safe_colors[c(4,2,3)])+
+                                       theme(legend.direction = "vertical")
+
+    )
+  }
+
+  
+  {
+  tmp1 = read_rds(paste0(root_dir,"/GitHub/BDF/BDF-SSL/4_datasets/Adam-2023_BDF_main_sub-1"))
+  tmp2 = read_rds(paste0(root_dir,"/GitHub/BDF/BDF-SSL/4_datasets/Adam-2023_BDF_main_sub-2"))
+  
+  BDF_main=rbind(
+    tmp1,
+    tmp2
+    )
+  rm(tmp1)
+  rm(tmp2)
+}
+  # comparison with soliTOC reference and additional margins
+  for (i in c("TOC","TC","CORG","Ct")){
+    if(i%in%c("TOC","TC")){
+    j=case_match(i,"TOC"~"CORG","TC"~"Ct")
+    best_models_soliTOC_plots[[paste(j,"ref",sep="_")]]=
+      ggplot(tibble(obs=BDF_main$BDF_database[[j]],pred=BDF_main$soliTOC[[i]])%>%na.omit,
+             aes(x=obs,y=pred))+geom_point()+geom_abline(intercept = 0,slope = 1,linetype="dotted")+
+      #    geom_ribbon(aes(x=obs,
+      #                    y=obs,
+      #                    ymin=obs-3*MAE(obs,pred),
+      #                    ymax=obs+3*MAE(obs,pred),
+      #                    col="3x mean absolute error of predicitons",
+      #                    fill="3x mean absolute error of predicitons"),
+      #                alpha=.1,linewidth=.25)+
+      #geom_ribbon(aes(x=obs,
+      #                y=obs,
+      #                ymin=obs-stp_tmp%>%filter(selected=="150-250"&name==i)%>%pull(conf_95),# soliTOC_precision[[4,paste0(i,"_sd")]]*3,
+      #                ymax=obs+stp_tmp%>%filter(selected=="150-250"&name==i)%>%pull(conf_95),#soliTOC_precision[[4,paste0(i,"_sd")]]*3,
+    #                col="95 % prediction interval of lab standard",
+    #                fill="95 % prediction interval of lab standard"
+    #),
+    #alpha=.1,linewidth=.25
+    #)+
+    geom_ribbon(aes(x=obs,
+                    y=obs,
+                    ymin=obs-conf_95(pred,obs),# soliTOC_precision[[4,paste0(i,"_sd")]]*3,
+                    ymax=obs+conf_95(pred,obs),#soliTOC_precision[[4,paste0(i,"_sd")]]*3,
+                    col= "2",
+                    fill="2"
+    ),
+    alpha=.1,linewidth=.25)+
+
+
+
+      #    geom_vline(xintercept = c(
+      #    LD_LQ%>%filter(fraction==i&set=="BDFstd")%>%pull(LD),
+      #    LD_LQ%>%filter(fraction==i&set=="BDFstd")%>%pull(LQ)
+      #  ))+
+      xlab(var_labels[[j]])+
+      ylab(var_labels[[i]])+
+      labs(
+        title=paste(i,"vs",j),
+        subtitle=paste("BDF reference data",j,"vs\n soliTOC measurements",i)
+      )+
+      theme_pubr()+
+      scale_color_manual("Error margins",
+                         breaks=c("1","2","3"),
+                         labels=label_list,
+                         values=colorblind_safe_colors[c(4,7,3)])+
+      scale_fill_manual("Error margins",
+                        breaks=c("1","2","3"),
+                        labels=label_list,
+                        values=colorblind_safe_colors[c(4,7,3)])+
+      theme(legend.direction = "vertical",legend.position = "top")
+
+    ## adding measurement ribbon to TOC an TC predictions for comparison
+    best_models_soliTOC_plots[[i]]=best_models_soliTOC_plots[[i]]+
+      geom_ribbon(data=tibble(obs=BDF_main$BDF_database[[j]],pred=BDF_main$soliTOC[[i]])%>%na.omit,
+                  aes(x=obs,
+                      y=obs,
+                      ymin=obs-conf_95(pred,obs),# soliTOC_precision[[4,paste0(i,"_sd")]]*3,
+                      ymax=obs+conf_95(pred,obs),#soliTOC_precision[[4,paste0(i,"_sd")]]*3,
+                      col= "2",
+                      fill="2"
+                  ),
+                  alpha=.1,linewidth=.25)
+    }
+    else{
+      ## adding measurement ribbon to CORG and Ct predictions for comparison
+      j=case_match(i,"CORG"~"TOC","Ct"~"TC")
+      best_models_soliTOC_plots[[i]]=best_models_soliTOC_plots[[i]]+
+        geom_ribbon(data=tibble(obs=BDF_main$soliTOC[[j]],pred=BDF_main$BDF_database[[i]])%>%na.omit,
+                    aes(x=obs,
+                        y=obs,
+                        ymin=obs-conf_95(pred,obs),# soliTOC_precision[[4,paste0(i,"_sd")]]*3,
+                        ymax=obs+conf_95(pred,obs),#soliTOC_precision[[4,paste0(i,"_sd")]]*3,
+                        col= "2",
+                        fill="2"
+                    ),
+                    alpha=.1,linewidth=.25)
+
+    }
+
+  }
+
+
+  svg(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/DRIFTS_eval_soliTOC.svg"),
+      width=10,
+      height=15)
+  plot(
+    ggarrange(#plotlist = list(
+    #  a=best_models_soliTOC_plots$Ct_ref,
+    #  aa=best_models_soliTOC_plots$CORG_ref,
+      aaa=best_models_soliTOC_plots$Ct,
+      aaaa=best_models_soliTOC_plots$CORG,
+      aaaaa=best_models_soliTOC_plots$TC,
+      b=best_models_soliTOC_plots$TOC,
+      c=best_models_soliTOC_plots$TOC400,
+      d=best_models_soliTOC_plots$ROC,
+      e=best_models_soliTOC_plots$TIC900,
+      f=ggplot()+geom_text(aes(x=0,y=0,label=selection),position = position_nudge(0,0))+theme_void(),
+      ncol = 2,
+      nrow = 5,
+      legend.grob=get_legend(best_models_soliTOC_plots$TC)
+    )
+  )
+  dev.off()
+}
+
+# same but in geman ######################################################################
+ selection= paste("Modelle wurden basierend auf dem niedrigsten RMSEP\nder Validierung mit dem Testdatensatz ausgewählt")
+
+
+
+label_list=c("95% Vorhersageband (Labor Standard)",
+                                  "95% Vorhersageband (soliTOC vs. Referenz)",
+                                  "95% Vorhersageband (DRIFTS vs. soliTOC)")
+  UNITS=read_csv(paste0(root_dir,"/GitHub/BDF/BDF-SSL/5_Provided_BDF-Database/Adam-2024_UBoden-UNITS_lookup.csv"))
+  var_labels<-paste(UNITS$variable,UNITS$unit)
+  names(var_labels)<-UNITS$variable
+  best_models_soliTOC_plots=list()
+  # obs pred plots
+  for (i in best_models_soliTOC$variable){
+
+    best_model_stats=bind_cols(x=
+                                 test_evaluation$Obs_Pred_data[[get_best(best_models_soliTOC,variable_ = i)]]$test$obs%>%max,
+                               y=test_evaluation$Obs_Pred_data[[get_best(best_models_soliTOC,variable_ = i)]]$test$obs%>%min,
+                               best_models_soliTOC%>%filter(variable==i))
+
+    best_models_soliTOC_plots[[i]]<-(test_evaluation$plots[[get_best(best_models_soliTOC,variable_ = i)]]+
+
+                                       geom_ribbon(aes(x=obs,
+                                                       y=obs,
+                                                       ymin=obs-conf_95(pred,obs),# soliTOC_precision[[4,paste0(i,"_sd")]]*3,
+                                                       ymax=obs+conf_95(pred,obs),#soliTOC_precision[[4,paste0(i,"_sd")]]*3,
+                                                       col= "3",
+                                                       fill="3"
+                                       ),
+                                       alpha=.1,linewidth=.25)+
+                                       labs(
+                                         title=var_labels[[i]],
+                                         subtitle=
+                                           paste(best_model_stats%>%pull(set),"/",
+                                                 best_model_stats%>%pull(trans)))+
+                                       xlab("Observations")+
+                                       ylab("Predictions")+
+                                       geom_text(data = best_model_stats,
+                                                 lineheight=.65,
+                                                 size=3.5,
+                                                 aes(x=x,
+                                                     y=y,
+                                                     # alpha=set,
+                                                     label=paste0("n=",test.n,
+                                                                  " RMSE=",format(test.rmse,nsmall=2,digits=2),
+                                                                  "\nR2=",format(test.R2,nsmall=2,digits=2),
+                                                                  " RPD=",format(test.rpd,nsmall=2,digits=2))),
+                                                 hjust="inward",
+                                                 vjust="inward")+
+                                       scale_color_manual("Vorhersageband",
+                                                          breaks=c("1","2","3"),
+                                                          labels=label_list,
+                                                          values=colorblind_safe_colors[c(4,2,3)])+
+                                       scale_fill_manual("Vorhersageband",
+                                                         breaks=c("1","2","3"),
+                                                         labels=label_list,
+                                                         values=colorblind_safe_colors[c(4,2,3)])+
+                                       theme(legend.direction = "vertical")
+
+    )
+  }
+
+  
+  {
+  tmp1 = read_rds(paste0(root_dir,"/GitHub/BDF/BDF-SSL/4_datasets/Adam-2023_BDF_main_sub-1"))
+  tmp2 = read_rds(paste0(root_dir,"/GitHub/BDF/BDF-SSL/4_datasets/Adam-2023_BDF_main_sub-2"))
+  
+  BDF_main=rbind(
+    tmp1,
+    tmp2
+    )
+  rm(tmp1)
+  rm(tmp2)
+}
+  # comparison with soliTOC reference and additional margins
+  for (i in c("TOC","TC","CORG","Ct")){
+    if(i%in%c("TOC","TC")){
+    j=case_match(i,"TOC"~"CORG","TC"~"Ct")
+    best_models_soliTOC_plots[[paste(j,"ref",sep="_")]]=
+      ggplot(tibble(obs=BDF_main$BDF_database[[j]],pred=BDF_main$soliTOC[[i]])%>%na.omit,
+             aes(x=obs,y=pred))+geom_point()+geom_abline(intercept = 0,slope = 1,linetype="dotted")+
+      #    geom_ribbon(aes(x=obs,
+      #                    y=obs,
+      #                    ymin=obs-3*MAE(obs,pred),
+      #                    ymax=obs+3*MAE(obs,pred),
+      #                    col="3x mean absolute error of predicitons",
+      #                    fill="3x mean absolute error of predicitons"),
+      #                alpha=.1,linewidth=.25)+
+      #geom_ribbon(aes(x=obs,
+      #                y=obs,
+      #                ymin=obs-stp_tmp%>%filter(selected=="150-250"&name==i)%>%pull(conf_95),# soliTOC_precision[[4,paste0(i,"_sd")]]*3,
+      #                ymax=obs+stp_tmp%>%filter(selected=="150-250"&name==i)%>%pull(conf_95),#soliTOC_precision[[4,paste0(i,"_sd")]]*3,
+    #                col="95 % prediction interval of lab standard",
+    #                fill="95 % prediction interval of lab standard"
+    #),
+    #alpha=.1,linewidth=.25
+    #)+
+    geom_ribbon(aes(x=obs,
+                    y=obs,
+                    ymin=obs-conf_95(pred,obs),# soliTOC_precision[[4,paste0(i,"_sd")]]*3,
+                    ymax=obs+conf_95(pred,obs),#soliTOC_precision[[4,paste0(i,"_sd")]]*3,
+                    col= "2",
+                    fill="2"
+    ),
+    alpha=.1,linewidth=.25)+
+
+
+
+      #    geom_vline(xintercept = c(
+      #    LD_LQ%>%filter(fraction==i&set=="BDFstd")%>%pull(LD),
+      #    LD_LQ%>%filter(fraction==i&set=="BDFstd")%>%pull(LQ)
+      #  ))+
+      xlab(var_labels[[j]])+
+      ylab(var_labels[[i]])+
+      labs(
+        title=paste(i,"vs",j),
+        subtitle=paste("BDF Referenz",j,"vs\n soliTOC Messungen",i)
+      )+
+      theme_pubr()+
+      scale_color_manual("Vorhersageband",
+                         breaks=c("1","2","3"),
+                         labels=label_list,
+                         values=colorblind_safe_colors[c(4,7,3)])+
+      scale_fill_manual("Vorhersageband",
+                        breaks=c("1","2","3"),
+                        labels=label_list,
+                        values=colorblind_safe_colors[c(4,7,3)])+
+      theme(legend.direction = "vertical",legend.position = "top")
+
+    ## adding measurement ribbon to TOC an TC predictions for comparison
+    best_models_soliTOC_plots[[i]]=best_models_soliTOC_plots[[i]]+
+      geom_ribbon(data=tibble(obs=BDF_main$BDF_database[[j]],pred=BDF_main$soliTOC[[i]])%>%na.omit,
+                  aes(x=obs,
+                      y=obs,
+                      ymin=obs-conf_95(pred,obs),# soliTOC_precision[[4,paste0(i,"_sd")]]*3,
+                      ymax=obs+conf_95(pred,obs),#soliTOC_precision[[4,paste0(i,"_sd")]]*3,
+                      col= "2",
+                      fill="2"
+                  ),
+                  alpha=.1,linewidth=.25)
+    }
+    else{
+      ## adding measurement ribbon to CORG and Ct predictions for comparison
+      j=case_match(i,"CORG"~"TOC","Ct"~"TC")
+      best_models_soliTOC_plots[[i]]=best_models_soliTOC_plots[[i]]+
+        geom_ribbon(data=tibble(obs=BDF_main$soliTOC[[j]],pred=BDF_main$BDF_database[[i]])%>%na.omit,
+                    aes(x=obs,
+                        y=obs,
+                        ymin=obs-conf_95(pred,obs),# soliTOC_precision[[4,paste0(i,"_sd")]]*3,
+                        ymax=obs+conf_95(pred,obs),#soliTOC_precision[[4,paste0(i,"_sd")]]*3,
+                        col= "2",
+                        fill="2"
+                    ),
+                    alpha=.1,linewidth=.25)
+
+    }
+
+  }
+
+{
+  svg(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/DRIFTS_eval_soliTOC.svg"),
+      width=10,
+      height=15)
+  plot(
+    ggarrange(#plotlist = list(
+    #  a=best_models_soliTOC_plots$Ct_ref,
+    #  aa=best_models_soliTOC_plots$CORG_ref,
+      aaa=best_models_soliTOC_plots$Ct,
+      aaaa=best_models_soliTOC_plots$CORG,
+      aaaaa=best_models_soliTOC_plots$TC,
+      b=best_models_soliTOC_plots$TOC,
+      c=best_models_soliTOC_plots$TOC400,
+      d=best_models_soliTOC_plots$ROC,
+      e=best_models_soliTOC_plots$TIC900,
+      f=ggplot()+geom_text(aes(x=0,y=0,label=selection),position = position_nudge(0,0))+theme_void(),
+      ncol = 2,
+      nrow = 5,
+      legend.grob=get_legend(best_models_soliTOC_plots$TC)
+    )
+  )
+  dev.off()
+}
+
+
+
+
+
+
+
+```
+
+
+#### Cubist var importance plot
+```{r}
+best_mod=get_best(cubist_evaluation_best_rmse,var="TOC")
+best_mod=paste0("cubist_spc_sg_rs4-none-ROC")
+read_rds(paste0(root_dir,
+               "/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models",
+                best_mod))->mod
+    mod$documentation$train_data[[2]]%>%colMeans()%>%
+     # select(-c(`.outcome`))%>%
+      #summarise_all(mean)%>%
+      #t%>%
+      data.frame%>%
+      rownames_to_column->avg_spc
+    names(avg_spc)<-c("nm","avg_absorbance")
+
+    
+######## VAR IMPORTANCE PLOT ############
+    svg(paste0(root_dir,"/GitHub/BDF/BDF_SSL/3_r_scripts/temp/varImp",best_mod,".svg"),width=4,height=3)
+    
+    ggplot(mod$documentation$train_data[[2]]%>%as_tibble%>%rownames_to_column()%>%pivot_longer(colnames(mod$documentation$train_data[[2]]))%>%mutate(name=as.numeric(name)),aes(x=name,
+                       y=value,group=rowname#avg_absorbance
+    ))+
+      geom_line(alpha=.025)+
+      geom_line(inherit.aes = F,data=avg_spc,aes(x=as.numeric(nm),
+                       y=avg_absorbance),col="red3",lwd=.25
+    )+
+      geom_line(inherit.aes = F,data= ((caret::varImp(mod))$importance%>%rownames_to_column()%>%mutate(rowname=rowname%>%str_remove_all("`")%>%as.numeric)),aes(x=rowname,y=Overall/25),color=rgb(1,0,0,.25))+
+      ggtitle(label="",subtitle=best_mod)+
+      scale_x_log10(expression("wavenumber ["*cm^-1*"]"),breaks=c(500,1000,2500,5000))+
+      scale_y_continuous("avg. absorbance",sec.axis = sec_axis("importance",trans = ~.*25,breaks=c(0,25,50,75,100)))+
+      theme_pubr()+theme(axis.title.y.right =element_text(angle=90))
+dev.off()
+    
+    
+``` 
+
+
+
+#### Cubist TOC varImp for all models (are varImp similar across different models for same var)
+```{r}
+
+var="Fe_t"
+{
+
+assign(paste0(var,"_none_spc"),(varImp(read_rds(paste0(root_dir,
+                "/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models/cubist_",
+                "spc_rs4-none",
+                "-TOC")))$importance)%>%rownames_to_column()%>%mutate(rowname=rowname%>%str_remove_all("`")%>%as.numeric))
+
+assign(paste0(var,"_log_spc"),(varImp(read_rds(paste0(root_dir,
+                "/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models/cubist_",
+                "spc_rs4-log1p",
+                "-TOC")))$importance)%>%rownames_to_column()%>%mutate(rowname=rowname%>%str_remove_all("`")%>%as.numeric))
+
+assign(paste0(var,"_none_spc_sg"),(varImp(read_rds(paste0(root_dir,
+                "/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models/cubist_",
+                "spc_sg_rs4-none",
+                "-TOC")))$importance)%>%rownames_to_column()%>%mutate(rowname=rowname%>%str_remove_all("`")%>%as.numeric))
+
+assign(paste0(var,"_log_spc_sg"),(varImp(read_rds(paste0(root_dir,
+                "/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models/cubist_",
+                "spc_sg_rs4-log1p",
+                "-TOC")))$importance)%>%rownames_to_column()%>%mutate(rowname=rowname%>%str_remove_all("`")%>%as.numeric))
+
+assign(paste0(var,"_none_spc_sg_bl"),(varImp(read_rds(paste0(root_dir,
+               "/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models/cubist_",
+                "spc_sg_bl_rs4-none",
+                "-TOC")))$importance)%>%rownames_to_column()%>%mutate(rowname=rowname%>%str_remove_all("`")%>%as.numeric))
+
+assign(paste0(var,"_log_spc_sg_bl"),(varImp(read_rds(paste0(root_dir,
+               "/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models/cubist_",
+                "spc_sg_bl_rs4-log1p",
+                "-TOC")))$importance)%>%rownames_to_column()%>%mutate(rowname=rowname%>%str_remove_all("`")%>%as.numeric))
+
+
+assign(paste0(var,"_none_spc_sg_snv"),(varImp(read_rds(paste0(root_dir,
+               "/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models/cubist_",
+                "spc_sg_snv_rs4-none",
+                "-TOC")))$importance)%>%rownames_to_column()%>%mutate(rowname=rowname%>%str_remove_all("`")%>%as.numeric))
+
+assign(paste0(var,"_log_spc_sg_snv"),(varImp(read_rds(paste0(root_dir,
+               "/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models/cubist_",
+                "spc_sg_snv_rs4-log1p",
+                "-TOC")))$importance)%>%rownames_to_column()%>%mutate(rowname=rowname%>%str_remove_all("`")%>%as.numeric))
+
+assign(paste0(var,"_none_spc_sg1d"),(varImp(read_rds(paste0(root_dir,
+               "/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models/cubist_",
+                "spc_sg1d_rs4-none",
+                "-TOC")))$importance)%>%rownames_to_column()%>%mutate(rowname=rowname%>%str_remove_all("`")%>%as.numeric))
+
+assign(paste0(var,"_log_spc_sg1d"),(varImp(read_rds(paste0(root_dir,
+               "/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models/cubist_",
+                "spc_sg1d_rs4-log1p",
+                "-TOC")))$importance)%>%rownames_to_column()%>%mutate(rowname=rowname%>%str_remove_all("`")%>%as.numeric))
+
+
+assign(paste0(var,"_none_spc_sg2d"),(varImp(read_rds(paste0(root_dir,
+               "/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models/cubist_",
+                "spc_sg2d_rs4-none",
+                "-TOC")))$importance)%>%rownames_to_column()%>%mutate(rowname=rowname%>%str_remove_all("`")%>%as.numeric))
+
+assign(paste0(var,"_log_spc_sg2d"),(varImp(read_rds(paste0(root_dir,
+               "/GitHub/BDF/BDF-SSL/2_models/2_Cubist_models/cubist_",
+                "spc_sg2d_rs4-log1p",
+                "-TOC")))$importance)%>%rownames_to_column()%>%mutate(rowname=rowname%>%str_remove_all("`")%>%as.numeric))
+
+}
+
+
+(
+ggplot(mapping = aes(x=rowname,y=Overall))+
+  geom_col(data=get(paste0(var,"_none_spc")),aes(col="none_spc"))+
+  geom_col(data=get(paste0(var,"_log_spc")),aes(col="log_spc"))+
+  geom_col(data=get(paste0(var,"_none_spc_sg")),aes(col="none_spc_sg"))+
+  geom_col(data=get(paste0(var,"_log_spc_sg")),aes(col="log_spc_sg"))+
+  geom_col(data=get(paste0(var,"_none_spc_sg_bl")),aes(col="none_spc_sg_bl"))+
+  geom_col(data=get(paste0(var,"_log_spc_sg_bl")),aes(col="log_spc_sg_bl"))+
+  geom_col(data=get(paste0(var,"_none_spc_sg_snv")),aes(col="none_spc_sg_snv"))+
+  geom_col(data=get(paste0(var,"_log_spc_sg_snv")),aes(col="log_spc_sg_snv"))+
+  geom_col(data=get(paste0(var,"_none_spc_sg1d")),aes(col="none_spc_sg1d"))+
+  geom_col(data=get(paste0(var,"_log_spc_sg1d")),aes(col="log_spc_sg1d"))+
+  geom_col(data=get(paste0(var,"_none_spc_sg2d")),aes(col="none_spc_sg2d"))+
+  geom_col(data=get(paste0(var,"_log_spc_sg2d")),aes(col="log_spc_sg2d"))+
+    ggtitle(var)
+    
+)%>%ggplotly
+
+
+
+
+```
+
+
+#### PLS var importance plot
+```{r}
+read_rds(paste0(root_dir,
+               "/GitHub/BDF/BDF-SSL/2_models/1_PLS_models/",
+                get_best(pls_evaluation_best_rmse,prefix = "pls_",var="TOC")))->mod
+    mod$documentation$train_data[[2]]%>%colMeans()%>%
+     # select(-c(`.outcome`))%>%
+      #summarise_all(mean)%>%
+      #t%>%
+      data.frame%>%
+      rownames_to_column->avg_spc
+    names(avg_spc)<-c("nm","avg_absorbance")
+    
+    ggplot(avg_spc,aes(x=as.numeric(nm),
+                       y=avg_absorbance
+    ))+
+      geom_line()+
+      geom_ribbon(data=varImp(mod)[1]%>%as.data.frame()%>%rownames_to_column(),
+               aes(x=as.numeric(str_remove_all(rowname,"`")),ymax=Overall/25-1,ymin=-1,y=Overall/25-1),alpha=.25,fill="red2")+
+     
+      ggtitle(get_best(pls_evaluation_best_rmse,var="TOC"))+
+      theme_pubr()+
+      scale_y_continuous(sec.axis = sec_axis("VarImp",trans = ~(.+1)*25))
+  
+
+``` 
+
+
+
+#### PLS coefficients plot
+```{r}
+read_rds(paste0(root_dir,
+                "/GitHub/BDF/BDF-SSL/2_models/1_PLS_models",
+                get_best(pls_evaluation_best_rmse,prefix = "pls_",variable_="TOC")))->mod
+
+mod$finalModel$coefficients%>%data.frame%>%rownames_to_column()->pls_coeff
+svg(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/","pls_coefficients.svg"),width=8,height=4)
+pls_coeff%>% 
+    ggplot(aes(x=as.numeric(str_remove_all(rowname,"`")),
+                       y=.data[[paste0(".outcome.",mod$finalModel$bestIter[[1]],".comps")]]
+    ))+
+  geom_hline(yintercept = 0,linetype="dotted")+
+      geom_line(col="red2")+
+  ylab("coefficients")+
+  xlab(expression("wavenumber [c"*m^-1*"]"))+
+  #scale_color_manual(breaks=names(pls_coeff)[-c(1,10)],values=colorblind_safe_colors)+
+      ggtitle(get_best(pls_evaluation_best_rmse,variable_="TOC",prefix = "pls_"),subtitle = paste("No. of components:",mod$finalModel$bestIter[[1]]))+
+      theme_pubr()
+  dev.off()
+
+  
+  
+as.matrix.data.frame(scores(mod$finalModel))%>%as.data.frame()->pls_scores
+names(pls_scores)=names(pls_scores)%>%str_replace("V","Comp")
+svg(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/","pls_scores.svg"),width=5,height=5)
+pls_scores%>% 
+    ggplot(aes(x=`Comp1`,
+               y=`Comp2`
+               ))+
+  geom_hline(yintercept = 0,linetype="dotted")+
+  geom_vline(xintercept = 0,linetype="dotted")+
+  geom_point(shape=21,col="red2")+
+  ylab(paste0("Comp 2 (",pls::explvar(mod$finalModel)[[2]]%>%format(digits = 3)," %)"))+
+  xlab(paste0("Comp 1 (",pls::explvar(mod$finalModel)[[1]]%>%format(digits = 3)," %)"))+
+  #scale_color_manual(breaks=names(pls_coeff)[-c(1,10)],values=colorblind_safe_colors)+
+      ggtitle(get_best(pls_evaluation_best_rmse,variable_="TOC",prefix = "pls_"),subtitle = paste("No. of components:",mod$finalModel$bestIter[[1]]))+
+      theme_pubr()
+  dev.off()
+  
+  
+  
+``` 
+
+
+#### evaluation metric barplots
+
+```{r, fig.width=8,fig.height=15}
+metric="rmse"
+ ggplot(
+    evaluation$eval%>%
+      # dummys for reordering in plot
+      mutate(set=case_match(set,
+                            "spc_rs4"~"1",
+                            "spc_sg_rs4"~"2",
+                            "spc_sg_bl_rs4"~"3",
+                            "spc_sg_snv_rs4"~"4",
+                            "spc_sg1d_rs4"~"5",
+                            "spc_sg2d_rs4"~"6"
+      )),
+    aes(x=set,y=.data[[paste0("test.",metric)]],fill=trans)
+  )+
+    geom_col(position="dodge",col="black")+
+    #ylab(expression(RMSEP[test]))+
+    xlab("")+
+  ylab(metric)+
+    scale_fill_discrete("Transformation")+
+    scale_x_discrete(
+      breaks=c(1:6),
+      # reverting to labels from dummys
+      labels=c("raw",
+               "SG21",
+               "SG21+BL",
+               "SG21+SNV",
+               "SG41+1d",
+               "SG41+2d")
+    )+
+    theme_pubr()+
+    theme(axis.text.x = element_text(angle=90,hjust = 1,vjust=0))+
+    facet_wrap(vars(variable),scales = "free_y",ncol=3)
+
+```
+
+
+
+## Texture prediction and correction
+
+```{r}
+source(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/predict_texture.R"))
+# load BDF frisch master 
+{
+  tmp1=read_rds(paste0(root_dir,"/GitHub/BDF/BDF-SSL/4_datasets/Adam-2024_BDF_frisch_sub-1"))
+  tmp2=read_rds(paste0(root_dir,"/GitHub/BDF/BDF-SSL/4_datasets/Adam-2024_BDF_frisch_sub-2"))
+  tmp3=read_rds(paste0(root_dir,"/GitHub/BDF/BDF-SSL/4_datasets/Adam-2024_BDF_frisch_sub-3"))
+  
+  
+  BDF_frisch=rbind(
+    tmp1,
+    tmp2,
+    tmp3
+  )
+  rm(tmp1)
+  rm(tmp2)
+  rm(tmp3)
+}
+
+
+# conceptual function for forcing sum of predictions to 100%
+frisch_texure=predict_texture(BDF_frisch,
+                root_dir = root_dir,
+                model_folder = "/GitHUb/BDF/BDF-SSL/2_models/2_Cubist_models",
+                dat_set = "test",
+                metric="rmse",
+                viter = T
+                )
+
+
+```
+
+
+
+# Exploring different pretreatments
+```{r}
+tmp_data=c()
+for (i in 
+(cubist_evaluation$Obs_Pred_data%>%names)[
+which(str_detect(names(cubist_evaluation$Obs_Pred_data),"TOC")&!str_detect(names(cubist_evaluation$Obs_Pred_data),"ROC")&!str_detect(names(cubist_evaluation$Obs_Pred_data),"400"))]
+){
+  
+  tmp_data=rbind(tmp_data,
+        data.frame(mod=i,
+  cubist_evaluation$Obs_Pred_data[[i]]$test)
+  )
+  }
+ggplotly((ggplot(tmp_data,aes(x=obs,y=pred,col=mod))+geom_point()+geom_abline(intercept = 0,slope=1)+theme_pubr()))
+
+
+tmp_data%>%group_by(mod)%>%summarise(rel_RMSE=rel_RMSE(obs,pred),NRMSEavg=RMSE(obs,pred)/mean(obs))%>%plot
+
+
+```

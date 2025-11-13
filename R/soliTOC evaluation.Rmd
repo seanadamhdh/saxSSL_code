@@ -1,0 +1,796 @@
+---
+title: "SoliTOC evaluation"
+output: html_notebook
+---
+
+#load
+```{r message=FALSE, warning=FALSE, r,echo=FALSE}
+# set root directory path
+# So script can easily be used on different devices. But does not change working directory for project
+#### change to your path !!!
+root_dir="C:/Users/adam/Documents"
+####
+
+
+source(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/packages.R"))
+
+
+source(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/soliTOC_readR.R"))
+
+
+```
+
+
+```{r}
+#BDFmain
+{
+  tmp1 = read_rds(paste0(root_dir,"/GitHub/BDF/BDF-SSL/4_datasets/Adam-2023_BDF_main_sub-1"))
+  tmp2 = read_rds(paste0(root_dir,"/GitHub/BDF/BDF-SSL/4_datasets/Adam-2023_BDF_main_sub-2"))
+  
+  BDF_main=rbind(
+    tmp1,
+    tmp2
+    )
+  rm(tmp1)
+  rm(tmp2)
+}
+
+
+
+
+
+
+
+
+
+```
+
+# Calculation of precision measures, LD, LQ
+```{r}
+
+## PRECISION MEASURES ####
+
+DINref_EM=pull_set_soliTOC(paste0(root_dir,"/GitHub/BDF/BDF-SSL/1_data/2_soliTOC/Adam-2024_raw_soliTOC-frisch.xlsx"),set_id = "DINref",set_memo = "EM")
+BDF_std=pull_set_soliTOC(paste0(root_dir,"/GitHub/BDF/BDF-SSL/1_data/2_soliTOC/Adam-2024_raw_soliTOC-frisch.xlsx"),set_id = "BDFstd",set_memo = NA)
+blank=pull_set_soliTOC(paste0(root_dir,"/GitHub/BDF/BDF-SSL/1_data/2_soliTOC/Adam-2024_raw_soliTOC-frisch.xlsx"),set_id = c("Blnk","blnk"),set_memo = NA)
+all=pull_set_soliTOC(paste0(root_dir,"/GitHub/BDF/BDF-SSL/1_data/2_soliTOC/Adam-2024_raw_soliTOC-frisch.xlsx"),set_id = c("[:alpha:]"),set_memo = NA)
+
+# Blank runs for determination of LQ + LD ####
+BDF_leer=pull_set_soliTOC(paste0(root_dir,"/GitHub/BDF/BDF-SSL/1_data/2_soliTOC/Adam-2024_raw_soliTOC-leer.xlsx"),set_id = "leer",fix_cols = T,set_memo = NA)
+BDF_leer=filter(BDF_leer,Pos.<=40) # loss of pressure (N2 empty), started probably when running std, values are way off from pos. 41 onwards
+Blank_LD_LQ=bind_cols(
+variable=c("TOC400","ROC","TIC900","TOC","TC"),
+AVG=t(summarise(BDF_leer,across(c("TOC400","ROC","TIC900","TOC","TC"),.fns = mean)))[,1],
+SD=t(summarise(BDF_leer,across(c("TOC400","ROC","TIC900","TOC","TC"),.fns = sd)))[,1],
+n=t(summarise(BDF_leer,across(c("TOC400","ROC","TIC900","TOC","TC"),.fns = length)))[,1]
+)%>%mutate(LD=3*SD,LQ=10*SD)
+
+
+### new DIN standard ####
+DINref_new=pull_set_soliTOC(paste0(root_dir,"/GitHub/BDF/BDF-SSL/1_data/2_soliTOC/Adam-2024_raw_soliTOC-frisch.xlsx"),set_id = "DINref",fix_cols = T,set_memo = "new")
+DINref_new%>%
+  #filter(Methode=="DIN19539")%>%
+  group_by(Methode)%>%summarise(across(c("TOC400","ROC","TIC900","TOC","TC"),.fns=list(avg=mean,stdev=sd)))
+
+
+
+```
+
+
+
+# Visualising DINref deviation
+```{r}
+
+
+svg(paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/DINref_new_performance.svg"),width=10,height=5)
+label_list=c("TOC400","ROC","TIC900","TOC","TC")
+names(label_list)=c(1:5)
+DINref_new%>%pivot_longer(cols=c("TOC400","ROC","TIC900","TOC","TC"))%>%
+  mutate(plot_order=case_match(name,
+                          "TOC400"~1,
+                          "ROC"~2,
+                          "TIC900"~3,
+                          "TOC"~4,
+                          "TC"~5))%>%
+  ggplot(aes(group=Methode,y=value))+
+  facet_wrap(facets = vars(plot_order),ncol=5,scales="free",
+             labeller = labeller(plot_order=label_list))+
+  stat_boxplot(geom="errorbar",width=.1,position=position_dodge(width=.75))+
+  geom_boxplot(aes(col="measured",fill=Methode),alpha=1)+
+  ylim(c(1.5,6))+ # bit extreme, but puts offset in perspective
+
+  geom_point(data=tibble(Methode="reference",plot_order=c(
+    1,2,3,4,5
+  ),
+  value=c(2,1.8,2,3.8,5.8)
+    ),aes(x=0,col="theoretical"),shape="_",size=10)+
+  geom_errorbar(data=tibble(Methode="reference",plot_order=c(
+    1,2,3,4,5
+  ),
+  value=c(2.11,1.74,2.05,3.85,5.85),
+  ymin=c(2.01,1.69,2,3.7,5.65),
+  ymax=c(2.21,1.79,2.1,4,6.05)
+  ),
+  aes(x=0,y=value,ymin=ymin,ymax=ymax,col="reference"),alpha=.5)+
+  geom_point(data=tibble(Methode="reference",plot_order=c(
+    1,2,3,4,5
+  ),
+  value=c(2.11,1.74,2.05,3.85,5.85),
+  ymin=c(2.01,1.69,2,3.7,5.65),
+  ymax=c(2.21,1.79,2.1,4,6.05)
+  ),
+  aes(x=0,y=value,col="reference"),alpha=.5,shape="_",size=5)+
+  theme_pubr()+
+  scale_color_manual("DIN standard",
+                     breaks=c("measured","reference","theoretical"),
+                     values=c("black","red","red3"))+
+  scale_fill_manual("DIN standard",values=c("lightgrey","darkgrey"))+
+
+  ylab("wt-%")+
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.x = element_blank())
+dev.off()
+
+
+
+
+
+
+```
+
+
+
+# BDF standard different sample weights
+```{r}
+# checking for different sample weights
+### for BDF standard ####
+soliTOC_precision_BDFstd=bind_rows(
+tibble(selected="all",
+BDF_std%>%select(c("TOC400","ROC","TIC900","TOC","TC"))%>%
+  summarise_all(.funs = list(
+    n=length,
+    mean=mean,
+    sd=sd,
+    conf_95=conf_95,
+rel2sd=function(x){2*sd(x)/mean(x)*100}))
+),
+tibble(selected="<250",
+BDF_std%>%
+  filter(#`Gewicht  [mg]`>150
+         `Gewicht  [mg]`<250
+         )%>%
+  select(c("TOC400","ROC","TIC900","TOC","TC"))%>%
+  summarise_all(.funs = list(
+    n=length,
+    mean=mean,
+    sd=sd,
+    conf_95=conf_95,
+    rel2sd=function(x){2*sd(x)/mean(x)*100}))
+),
+tibble(
+  selected=">220",
+  BDF_std%>%
+    filter(`Gewicht  [mg]`>220
+      #`Gewicht  [mg]`<250
+    )%>%
+    select(c("TOC400","ROC","TIC900","TOC","TC"))%>%
+    summarise_all(.funs = list(
+      n=length,
+      mean=mean,
+      sd=sd,
+      conf_95=conf_95,
+      rel2sd=function(x){2*sd(x)/mean(x)*100}))
+),
+tibble(
+  selected="150-250",
+  BDF_std%>%
+    filter(`Gewicht  [mg]`>150&
+      `Gewicht  [mg]`<250
+    )%>%
+    select(c("TOC400","ROC","TIC900","TOC","TC"))%>%
+    summarise_all(.funs = list(
+      n=length,
+      mean=mean,
+      sd=sd,
+      conf_95=conf_95,
+      rel2sd=function(x){2*sd(x)/mean(x)*100}))
+)
+)
+
+
+```
+
+
+
+# soliTOC oGS vs GS
+```{r}
+
+
+# main oGS
+BDF_main_soliTOC_oGS=pull_set_soliTOC(
+  paste0(root_dir,"/GitHub/BDF/BDF-SSL/1_data/2_soliTOC/Adam-2023_raw_soliTOC-main.xlsx"),
+    set_id = "LA",
+    fix_cols = T,
+    set_memo = "MM400")%>%
+  filter(Methode=="DIN19539")%>%
+  soliTOC_remove_duplicates(reference = F,method = "latest")
+
+
+# main GS
+BDF_main_soliTOC_GS=pull_set_soliTOC(
+  paste0(root_dir,"/GitHub/BDF/BDF-SSL/1_data/2_soliTOC/Adam-2023_raw_soliTOC-main.xlsx"),
+    set_id = "LA",
+    fix_cols = T,
+    set_memo = "MM400")%>%
+  filter(Methode=="DIN19539GS")%>%
+  soliTOC_remove_duplicates(measurement_method = "DIN19539GS",reference = F,method = "latest")
+
+# ROC
+rbind(BDF_main_soliTOC_oGS,BDF_main_soliTOC_GS)%>%
+  ggplot(aes(x=Methode,y=ROC,fill=Methode))+
+  geom_boxplot()+
+  scale_y_log10()+
+  xlab("")+
+  ylab("ROC [M-%]")
+  scale_fill_manual(breaks=c("DIN19539","DIN19539GS"),values=c(colorblind_safe_colors[c(2,4)]))+
+  theme_pubr()
+
+rbind(BDF_main_soliTOC_oGS,BDF_main_soliTOC_GS)%>%
+  ggplot(aes(x=Methode,y=TIC900,fill=Methode))+
+  geom_boxplot()+
+  scale_y_log10()+
+    xlab("")+
+  ylab(expression("TI"*C[900]*" [M-%]"))+
+  scale_fill_manual(breaks=c("DIN19539","DIN19539GS"),values=c(colorblind_safe_colors[c(2,4)]))+
+  theme_pubr()
+
+
+# ref vs oGS vs GS
+ref_vs_oGS_vs_GS=full_join(data.frame(sample_id=BDF_main$sample_id,BDF_main$BDF_database)%>%select(sample_id,CORG,Ct),
+                    full_join(BDF_main_soliTOC_oGS,BDF_main_soliTOC_GS,by="Name",suffix=c(".oGS",".GS")),
+by=c("sample_id"="Name"))
+
+ref_vs_oGS_vs_GS_eval=rbind(
+# comparison with reference
+data.frame(set="Ct vs TC.GS",evaluate_model_adjusted(ref_vs_oGS_vs_GS,obs="Ct",pred="TC.GS")),
+data.frame(set="Ct vs TC.oGS",evaluate_model_adjusted(ref_vs_oGS_vs_GS,obs="Ct",pred="TC.oGS")),
+data.frame(set="CORG vs TOC.GS",evaluate_model_adjusted(ref_vs_oGS_vs_GS,obs="CORG",pred="TOC.GS")),
+data.frame(set="CORG vs TOC.oGS",evaluate_model_adjusted(ref_vs_oGS_vs_GS,obs="CORG",pred="TOC.oGS")),
+
+# comparison between methods
+data.frame(set="TC.oGS vs TC.GS",evaluate_model_adjusted(ref_vs_oGS_vs_GS,obs="TC.oGS",pred="TC.GS")),
+data.frame(set="TOC.oGS vs TOC.GS",evaluate_model_adjusted(ref_vs_oGS_vs_GS,obs="TOC.oGS",pred="TOC.GS")),
+data.frame(set="TOC400.oGS vs TOC400.GS",evaluate_model_adjusted(ref_vs_oGS_vs_GS,obs="TOC400.oGS",pred="TOC400.GS")),
+data.frame(set="ROC.oGS vs ROC.GS",evaluate_model_adjusted(ref_vs_oGS_vs_GS,obs="ROC.oGS",pred="ROC.GS")),
+data.frame(set="TIC900.oGS vs TIC900.GS",evaluate_model_adjusted(ref_vs_oGS_vs_GS,obs="TIC900.oGS",pred="TIC900.GS"))
+)
+```
+
+
+# ROC TOC ratio
+```{r}
+
+ggplot(filter(BDF_main$soliTOC),aes(x=TOC,y=ROC))+
+    geom_point(shape=21,size=1.5,fill=colorblind_safe_colors[2])+
+    #geom_abline(intercept = 0,slope=1,linetype="dotted")+
+    geom_abline(intercept = 0,slope=.1)+
+    xlab("TOC [Masse %]")+
+    ylab("ROC [Masse %]")+
+    geom_label(aes(x=6,y=.6,label="10%"))+
+    # coord_cartesian(xlim=c(0,2),ylim=c(0,.3))+
+    #  scale_x_log10()+
+    # scale_y_log10()+
+    theme_pubr()
+
+
+```
+
+
+# landuse and depth differentiated 
+```{r}
+
+  BDF_main_soliTOC=cbind(BDF_main$soliTOC,BDF_main$BDF_database) #same order already, no need for left join
+
+  # TOC Nutzung ####
+  {
+
+    n_obs<-function(x){
+      return(list(
+        y=-.5, # <- set y manually or using x (e.g. with min(x))
+        label=paste0("n=",length(x))
+      ))
+    }
+    filter(BDF_main_soliTOC,Methode=="DIN19539")%>%
+      ggplot(aes(y=TOC,
+                 group=Nutzung,
+                 x=Nutzung,
+                 fill=Nutzung))+
+      geom_violin(alpha=.1)+
+      geom_boxplot(width=.2)+
+      stat_summary(fun.data = n_obs,geom="text")+ #number of observations
+      stat_summary(fun.y=mean,geom="point",shape=4,size=2,stroke=1)+ #mean as X
+      scale_fill_manual(breaks=c("A","G"),values=colorblind_safe_colors[c(7,4)],labels=c("Acker","Grünland"))+
+      ylab("TOC [Masse-%]")+
+      theme_pubclean()+
+      theme(axis.line = element_line(),
+            axis.text.x = element_blank(),
+            axis.title.x = element_blank(),
+            axis.ticks.x = element_blank())
+  }
+
+  # TOC400 Nutzung ####
+  {
+    n_obs<-function(x){
+      return(list(
+        y=-.5, # <- set y manually or using x (e.g. with min(x))
+        label=paste0("n=",length(x))
+      ))
+    }
+    filter(BDF_main_soliTOC,Methode=="DIN19539")%>%
+      ggplot(aes(y=TOC400,
+                 group=Nutzung,
+                 x=Nutzung,
+                 fill=Nutzung))+
+      geom_violin(alpha=.1)+
+      geom_boxplot(width=.2)+
+      stat_summary(fun.data = n_obs,geom="text")+ #number of observations
+      stat_summary(fun.y=mean,geom="point",shape=4,size=2,stroke=1)+ #mean as X
+      scale_fill_manual(breaks=c("A","G"),values=colorblind_safe_colors[c(7,4)],labels=c("Acker","Grünland"))+
+      ylab("TOC400 [Masse-%]")+
+      theme_pubclean()+
+      theme(axis.line = element_line(),
+            axis.text.x = element_blank(),
+            axis.title.x = element_blank(),
+            axis.ticks.x = element_blank())
+  }
+
+  # ROC Nutzung ####
+  {
+    n_obs<-function(x){
+      return(list(
+        y=-.1, # <- set y manually or using x (e.g. with min(x))
+        label=paste0("n=",length(x))
+      ))
+    }
+    filter(BDF_main_soliTOC,Methode=="DIN19539")%>%
+      ggplot(aes(y=ROC,
+                 group=Nutzung,
+                 x=Nutzung,
+                 fill=Nutzung))+
+      geom_violin(alpha=.1,scale="width")+
+      geom_boxplot(width=.2)+
+      stat_summary(fun.data = n_obs,geom="text")+ #number of observations
+      stat_summary(fun.y=mean,geom="point",shape=4,size=2,stroke=1)+ #mean as X
+      scale_fill_manual(breaks=c("A","G"),values=colorblind_safe_colors[c(7,4)],labels=c("Acker","Grünland"))+
+      ylab("ROC [Masse-%]")+
+      theme_pubclean()+
+      theme(axis.line = element_line(),
+            axis.text.x = element_blank(),
+            axis.title.x = element_blank(),
+            axis.ticks.x = element_blank())
+  }
+
+
+
+
+  #### ROC/TOC ratio boxplots Nutzung ####
+  {
+    n_obs<-function(x){
+      return(list(
+        y=3, # <- set y manually or using x (e.g. with min(x))
+        label=paste0("n=",length(x))
+      ))
+    }
+    BDF_main_soliTOC%>%filter(Methode=="DIN19539")%>%
+      ggplot(aes(y=ROC/TOC*100,
+                 group=Nutzung,
+                 x=Nutzung,
+                 fill=Nutzung))+
+      geom_violin(alpha=.1,width=1,scale="width")+
+      geom_boxplot(width=.2)+
+      stat_summary(fun.data = n_obs,geom="text")+ #number of observations
+      stat_summary(fun.y=mean,geom="point",shape=4,size=2,stroke=1)+ #mean as X
+      scale_fill_manual(breaks=c("A","G"),values=colorblind_safe_colors[c(7,4)],labels=c("Acker","Grünland"))+
+      ylab(expression("ROC/TOC Ratio [%]"))+
+      theme_pubclean()+
+      #scale_y_log10()+
+      theme(axis.line = element_line(),
+            axis.text.x = element_blank(),
+            axis.title.x = element_blank(),
+            axis.ticks.x = element_blank())
+
+  }
+
+
+
+
+
+
+
+  ##ROC/TOC ratio boxplots Horizont getrennt ####
+{
+  n_obs<-function(x){
+    return(list(
+      y=3, # <- set y manually or using x (e.g. with min(x))
+      label=paste0("n=",length(x))
+    ))
+  }
+
+svg("~/GitHub/BDF/BDF-SSL/3_r_scripts/temp/ROC_ratio_violin_horizon.svg",height=4,width = 4)
+  plot(
+  BDF_main_soliTOC%>%filter(Methode=="DIN19539")%>%
+    # last capital letter in soil horizon code  <-.................................... LAST CAPTITAL
+    mutate(Horizont_main=Horizont%>%
+             str_remove_all("[:lower:]")%>%
+             str_remove_all("[:symbol:]")%>%
+             str_remove_all("[:punct:]")%>%
+             str_pad(10,"left")%>%
+             substr(10,10)
+    )%>%filter(Horizont_main%in%c("A","B","C"))%>%
+    ggplot(aes(y=ROC/TOC*100,#400*100,
+               group=Horizont_main,
+               x=Horizont_main,
+               fill=Horizont_main))+
+    geom_violin(alpha=.1,width=.8,scale="width")+
+    geom_boxplot(width=.2)+
+    stat_summary(fun.data = n_obs,geom="text")+ #number of observations
+    stat_summary(fun.y=mean,geom="point",shape=4,size=2,stroke=1)+ #mean as X
+    scale_fill_manual("Horizonte",breaks=c("A","B","C","S","M","G"),values=colorblind_safe_colors[c(2:7)])+
+    ylab(expression("ROC/TOC Ratio [%]"))+
+    theme_pubclean()+
+    #scale_y_log10()+
+    theme(axis.line = element_line(),
+          axis.text.x = element_blank(),
+          axis.title.x = element_blank(),
+          axis.ticks.x = element_blank())
+  )
+  dev.off()
+}
+
+{
+    BDF_main_soliTOC%>%filter(Methode=="DIN19539")%>%
+      mutate(avg_depth=(untere.Probentiefe+obere.Probentiefe)/2,
+             depth_zone=
+               case_when(   # quartile based
+                 avg_depth<=.10~"0-10",
+                 avg_depth>.10&avg_depth<=.20~"10-20",
+                 avg_depth>.20&avg_depth<=.30~"20-30",
+                 avg_depth>.30&avg_depth<=.40~"30-40",
+                 avg_depth>.40&avg_depth<=.50~"40-50",
+                 #avg_depth>.60&avg_depth<=.80~"60-80",
+                 avg_depth>.50~"50-91"
+               ))%>%ggplot(aes(x=avg_depth,y=TOC#ROC/TOC
+                               ,col=Nutzung,group=Nutzung))+
+      geom_point()+
+      geom_smooth(method="gam")+geom_errorbarh(aes(xmin=obere.Probentiefe,xmax=untere.Probentiefe),alpha=.1)+
+      xlab("Mittlere Beprobungstiefe [m]")+
+      ylab("TOC [Masse-%]")+
+      theme_pubr()+
+      theme(legend.position = c(.9,.9))
+}
+
+
+{
+svg("~/GitHub/BDF/BDF-SSL/3_r_scripts/temp/ROC_ratio_violin_depth.svg",height=4,width = 4)
+  plot(
+  BDF_main_soliTOC%>%filter(Methode=="DIN19539"#&Nutzung=="A"
+  )%>%
+    mutate(avg_depth=(untere.Probentiefe+obere.Probentiefe)/2,
+           depth_zone=
+             case_when(   # quartile based
+               avg_depth<=.30~"0-30",
+               # avg_depth>.10&avg_depth<=.30~"10-30",
+               #  avg_depth>.20&avg_depth<=.30~"20-30",
+               avg_depth>.30&avg_depth<=.60~"30-60",
+               #avg_depth>.40&avg_depth<=.50~"40-50",
+               #avg_depth>.60&avg_depth<=.80~"60-80",
+               avg_depth>.50~"60-91"
+             ))%>%
+    ggplot(aes(y=ROC/TOC*100,#400*100,
+               group=depth_zone,
+               x=depth_zone,
+               fill=depth_zone))+
+    geom_violin(alpha=.1,width=.8,scale="width")+
+    geom_boxplot(width=.2)+
+    stat_summary(fun.data = n_obs,geom="text")+ #number of observations
+    stat_summary(fun.y=mean,geom="point",shape=4,size=2,stroke=1)+ #mean as X
+    scale_fill_manual("Tiefe",breaks=c("0-30","30-60","60-91"),values=colorblind_safe_colors[c(6:8)])+
+    #scale_fill_manual("Tiefe",breaks=c("0-10","10-20","20-30","30-40","40-50","50-91"),values=colorblind_safe_colors[c(2:8)])+
+    ylab(expression("ROC/TOC Ratio [%]"))+
+    theme_pubclean()+
+    #scale_y_log10()+
+    theme(axis.line = element_line(),
+          axis.text.x = element_blank(),
+          axis.title.x = element_blank(),
+          axis.ticks.x = element_blank())
+  )
+dev.off()
+}
+
+
+
+#stats
+ 
+  BDF_main_soliTOC%>%filter(Methode=="DIN19539"#&Nutzung=="A"
+  )%>%mutate(avg_depth=(untere.Probentiefe+obere.Probentiefe)/2,
+           depth_zone=
+             case_when(   # quartile based
+               avg_depth<=.30~"0-30",
+               # avg_depth>.10&avg_depth<=.30~"10-30",
+               #  avg_depth>.20&avg_depth<=.30~"20-30",
+               avg_depth>.30&avg_depth<=.60~"30-60",
+               #avg_depth>.40&avg_depth<=.50~"40-50",
+               #avg_depth>.60&avg_depth<=.80~"60-80",
+               avg_depth>.50~"60-91"
+             ),
+           Horizont_main=Horizont%>%
+             str_remove_all("[:lower:]")%>%
+             str_remove_all("[:symbol:]")%>%
+             str_remove_all("[:punct:]")%>%
+             str_pad(10,"left")%>%
+             substr(10,10),
+        roc_ratio=ROC/TOC)->tmp
+  
+  
+  
+  print("Nutzung")
+  print("TOC400")
+  wilcox.test(filter(tmp,Nutzung=="A")%>%pull(TOC400),
+              filter(tmp,Nutzung=="G")%>%pull(TOC400),
+              conf.int = T)
+  
+  print("ROC")
+  wilcox.test(filter(tmp,Nutzung=="A")%>%pull(ROC),
+              filter(tmp,Nutzung=="G")%>%pull(ROC),
+              conf.int = T)
+  
+  print("TOC")
+  wilcox.test(filter(tmp,Nutzung=="A")%>%pull(TOC),
+              filter(tmp,Nutzung=="G")%>%pull(TOC),
+              conf.int = T)
+  
+   print("ROC ratio")
+  wilcox.test(filter(tmp,Nutzung=="A")%>%pull(roc_ratio)*100,
+              filter(tmp,Nutzung=="G")%>%pull(roc_ratio)*100,
+              conf.int = T)
+  
+  
+  
+  
+  
+  
+  
+  print("Horizonte")
+  print("A vs B")
+  wilcox.test(filter(tmp,Horizont_main=="A")%>%pull(roc_ratio),
+              filter(tmp,Horizont_main=="B")%>%pull(roc_ratio),
+              conf.int = T)
+  
+  print("B vs C")
+  wilcox.test(filter(tmp,Horizont_main=="B")%>%pull(roc_ratio),
+              filter(tmp,Horizont_main=="C")%>%pull(roc_ratio),
+              conf.int = T)
+  
+  print("A vs C")
+  wilcox.test(filter(tmp,Horizont_main=="A")%>%pull(roc_ratio),
+              filter(tmp,Horizont_main=="C")%>%pull(roc_ratio),
+              conf.int = T)
+  
+  
+  print("Tiefenstufen")
+  print("0-30 vs 30-60")
+  wilcox.test(filter(tmp,depth_zone=="30-60")%>%pull(roc_ratio),
+              filter(tmp,depth_zone=="0-30")%>%pull(roc_ratio),
+              conf.int = T)
+
+  print("30-60 vs 60-91")
+  wilcox.test(filter(tmp,depth_zone=="30-60")%>%pull(roc_ratio),
+              filter(tmp,depth_zone=="60-91")%>%pull(roc_ratio),
+              conf.int = T)
+  
+  
+  
+  #extra
+   print("A vs M")
+   wilcox.test(filter(tmp,Horizont_main=="A")%>%pull(roc_ratio),
+              filter(tmp,Horizont_main=="M")%>%pull(roc_ratio),
+              conf.int = T)
+  
+   
+  print("B vs M")
+  wilcox.test(filter(tmp,Horizont_main=="A")%>%pull(roc_ratio),
+              filter(tmp,Horizont_main=="M")%>%pull(roc_ratio),
+              conf.int = T)
+  
+
+   print("A vs G")
+   wilcox.test(filter(tmp,Horizont_main=="A")%>%pull(roc_ratio),
+              filter(tmp,Horizont_main=="G")%>%pull(roc_ratio),
+              conf.int = T)
+  
+   
+  print("B vs G")
+  wilcox.test(filter(tmp,Horizont_main=="A")%>%pull(roc_ratio),
+              filter(tmp,Horizont_main=="G")%>%pull(roc_ratio),
+              conf.int = T)
+  
+  
+   print("A vs S")
+   wilcox.test(filter(tmp,Horizont_main=="A")%>%pull(roc_ratio),
+              filter(tmp,Horizont_main=="S")%>%pull(roc_ratio),
+              conf.int = T)
+  
+   
+  print("B vs S")
+  wilcox.test(filter(tmp,Horizont_main=="A")%>%pull(roc_ratio),
+              filter(tmp,Horizont_main=="S")%>%pull(roc_ratio),
+              conf.int = T)
+  
+  
+  
+
+```
+
+
+# Thermograms / Peakgrafiken
+```{r}
+
+{
+
+fill_v<-function(x,l=length(x),with=NA,after=length(x)){
+  return(c(x[1:after],rep(with,l-after)))
+}
+
+files<-list.files(paste0(root_dir,"/GitHub/BDF/BDF-SSL/1_data/2_soliTOC/1_peakgrafiken_main"),full.names = T)
+
+
+# !!! make sure peak graphics match Name !!!
+soliTOCdata<- read_excel(paste0(root_dir,"/GitHub/BDF/BDF-SSL/1_data/2_soliTOC/Adam-2023_raw_soliTOC-main.xlsx"))
+
+# SLOW!!!
+
+{
+
+pb <- progress::progress_bar$new(
+  format = "(:spin) [:bar] :percent [Elapsed time: :elapsedfull || Estimated time remaining: :eta]",
+  total = length(files),
+  complete = "=",   # Completion bar character
+  incomplete = "-", # Incomplete bar character
+  current = ">",    # Current bar character
+  clear = FALSE,    # If TRUE, clears the bar when finish
+  width = 100)      # Width of the progress bar
+
+all_graphics<-tibble()
+for (j in c(1:length(files))){
+  i<-files[j]
+  data_i <- read.delim(i,
+                       header=FALSE, comment.char="#")
+  names(data_i)<-c("time",	"oven_1_temp", "oven_2_temp",	"flow_N2", "flow_arm",
+                   "Pressure_in", "Pressure_out",	"signal")
+  data_i$Name<-soliTOCdata$Name[j]
+  data_i$Memo<-soliTOCdata$Memo[j]
+  data_i$Gewicht<-soliTOCdata$`Gewicht  [mg]`[j]
+  data_i$Methode<-soliTOCdata$Methode[j]
+  # ! this is the raw, uncorrected (or even just partially corrected data)
+#  data_i$TOC<-soliTOCdata$`TOC  [%]`[j]
+#  data_i$TC<-soliTOCdata$`TC  [%]`[j]
+#  data_i$TOC400<-soliTOCdata$`TOC400  [%]`[j]
+#  data_i$ROC<-soliTOCdata$`ROC  [%]`[j]
+#  data_i$TIC900<-soliTOCdata$`TIC900  [%]`[j]
+  data_i$filename<-i
+  assign(str_remove(i,".txt"),data_i)
+  all_graphics<-bind_rows(all_graphics,data_i)
+  pb$tick()
+}
+pb$terminate()
+}
+}
+# safety -> run only manually
+saveRDS(all_graphics,paste0(root_dir,"/GitHub/BDF/BDF-SSL/3_r_scripts/temp/soliTOC_peaks_main"))
+#### plotting ####
+
+
+# ! this loads the version saved in /1_data, not the one that is saved to /3_r_scripts above
+all_graphics<-read_rds(paste0(root_dir,"/GitHub/BDF/BDF-SSL/1_data/2_soliTOC/Adam-2023_soliTOC_peaks_main"))
+
+
+
+
+filter(
+  all_graphics,
+  Name == "DINref" &
+    Methode == "DIN19539" &
+    Memo %in% c("control", "Control", "control_new", "control_old","")
+) %>% ggplot(aes(
+  x = time,
+  y = signal / Gewicht,
+  group = filename,
+  col = if_else(Memo == "control_new", "new", "old")
+)) + geom_line(alpha = .5) + xlab("Zeit [s]") + ylab("Standardised Signal [mg-1]") +
+  theme_pubr()
+#OGS
+
+{
+  filter(
+    all_graphics,
+    str_detect(Name,"LA") &
+      Name!="LAGT" & #one weired meas.
+      #time>200 & time<1500 & #crop
+      Methode %in% c("DIN19539","DIN19539GS")
+      )%>%
+    ggplot(aes(
+      x = time,
+      y = signal / Gewicht,
+    ))+
+    geom_point(aes(x=10,y=max(all_graphics%>%filter(str_detect(Name,"LA"))%>%mutate(x=signal/Gewicht)%>%pull(x))),alpha=0)+
+    geom_line(aes(group = filename,alpha=Methode)) +
+    geom_line(data=filter(
+      all_graphics,
+      str_detect(Name,"LA") &
+        Name!="LAGT" & # one weired meas.
+        #time>200 & time<1500 & #crop
+        Methode == "DIN19539")%>%group_by(time)%>%summarise(temp=mean(oven_1_temp)),aes(y=temp^2/50),col="red")+
+    geom_ribbon(aes(xmin=0,xmax=max(time)),fill="orange",alpha=.1)+
+    scale_x_continuous("Zeit [s]",breaks=seq(0,1500,500)) +
+    scale_y_sqrt(expression("Standardisiertes Signal [m"*g^-1*"]"),
+                 breaks=c(0,100,1000,2500,5000,10000,20000),limits=c(0,31500),sec.axis=sec_axis("Ofentemperatur [°C]",trans=~.,breaks=(c(0,100,400,600,900)^2/50),labels=c(0,100,400,600,900))) +
+    theme_pubr()+
+    theme(axis.title.y.right = element_blank(),
+          axis.text.y.right = element_blank(),
+          axis.ticks.y.right = element_blank(),
+          legend.position = "none")+
+    scale_alpha_manual(breaks=c("DIN19539","DIN19539GS"),values=c(.1,0))+
+    ggtitle("DIN19539")
+}
+  #GS
+{
+  filter(
+    all_graphics,
+    str_detect(Name,"LA") &
+      Name!="LAGT" & # one weired meas.
+      #time>200 & time<1500 & #crop
+    Methode == "DIN19539GS")%>%
+    group_by(time)%>%summarise(flow=mean(flow_arm))%>%mutate(inert=if_else(time<500|flow<mean(flow),"no","yes"))->flow
+  filter(
+    all_graphics,
+    str_detect(Name,"LA") &
+      Name!="LAGT" & # one weired meas.
+      #time>200 & time<1500 & #crop
+      Methode %in% c("DIN19539","DIN19539GS")
+    )%>%
+    ggplot(aes(
+      x = time,
+      y = signal / Gewicht,
+    ))+
+    geom_line(aes(group = filename,alpha=Methode)) +
+    geom_line(data=filter(
+      all_graphics,
+      str_detect(Name,"LA") &
+        Name!="LAGT" & # one weired meas.
+        #time>200 & time<1500 & #crop
+        Methode == "DIN19539GS")%>%group_by(time)%>%summarise(temp=mean(oven_1_temp)),aes(y=temp^2/50),col="red")+
+    geom_ribbon(aes(xmin=0,xmax=flow%>%group_by(inert)%>%summarise(start=first(time),end=last(time))%>%filter(inert=="yes")%>%pull(start)-1),fill="orange",alpha=.1)+
+    geom_ribbon(aes(xmin=flow%>%group_by(inert)%>%summarise(start=first(time),end=last(time))%>%filter(inert=="yes")%>%pull(start),xmax=flow%>%group_by(inert)%>%summarise(start=first(time),end=last(time))%>%filter(inert=="yes")%>%pull(end)),fill="palegreen4",alpha=.1)+
+    geom_ribbon(aes(xmin=flow%>%group_by(inert)%>%summarise(start=first(time),end=last(time))%>%filter(inert=="yes")%>%pull(end)+1,xmax=flow%>%group_by(inert)%>%summarise(start=first(time),end=last(time))%>%filter(inert=="no")%>%pull(end)),fill="darkorange",alpha=.1)+
+    scale_x_continuous("Zeit [s]",breaks=seq(0,1500,500)) +
+    scale_y_sqrt(expression("Standardisiertes Signal [m"*g^-1*"]"),
+                 breaks=c(0,100,1000,2500,5000,10000,20000),limits=c(0,31500),sec.axis=sec_axis("Ofentemperatur [°C]",trans=~.,breaks=(c(0,100,400,600,900)^2/50),labels=c(0,100,400,600,900))) +
+    theme_pubr()+
+    theme(axis.title.y.left = element_blank(),
+          axis.text.y.left = element_blank(),
+          axis.ticks.y.left = element_blank(),
+          legend.position = "none")+
+    scale_alpha_manual(breaks=c("DIN19539","DIN19539GS"),values=c(0,.1))+
+    ggtitle("DIN19539GS")
+}->p
+
+
+
+
+
+
+
+
+
+```
